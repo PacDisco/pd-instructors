@@ -1,0 +1,14 @@
+{
+  "name": "pd-student-portal",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Pacific Discovery student portal — Netlify-hosted static site + serverless functions backed by HubSpot + Jotform + Stripe.",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "nodemailer": "^6.9.16",
+    "web-push": "^3.6.7"
+  }
+}
