@@ -1,8 +1,24 @@
 // Bump this string any time you ship a release that should bust the
 // install-time cache for previously-installed PWA users. The activate
 // handler below deletes any cache whose name doesn't match.
-const CACHE_NAME = "pacific-discovery-v39-photo-album";
+const CACHE_NAME = "pacific-discovery-v40-offline-field";
 const STATIC_FILES = ["/index.html", "/login.html", "/site.webmanifest"];
+
+// Separate cache for "field-essential" GET data so a trip leader with no
+// signal can still read the information they loaded while online. Kept apart
+// from the static cache so the activate-time cleanup doesn't wipe it on every
+// release. Populated + served by networkFirstData() below.
+const DATA_CACHE = "pd-field-data-v1";
+const CACHEABLE_DATA = [
+  "/.netlify/functions/portal",                 // core trip data + key contacts
+  "/.netlify/functions/get-students",           // student list
+  "/.netlify/functions/get-application-data",   // per-student medical / application
+  "/.netlify/functions/get-document-checklist", // per-student document checklist
+  "/.netlify/functions/get-insurance"           // global config (doc form, faqs)
+];
+function isCacheableData(url) {
+  return CACHEABLE_DATA.some(p => url.includes(p));
+}
 
 // Install — cache static files
 self.addEventListener("install", e => {
@@ -12,22 +28,67 @@ self.addEventListener("install", e => {
   self.skipWaiting(); // activate immediately
 });
 
-// Activate — delete old caches
+// Activate — delete old caches (but KEEP both the current static cache and the
+// field-data cache, so an upgrade doesn't wipe the offline field data).
 self.addEventListener("activate", e => {
+  const KEEP = [CACHE_NAME, DATA_CACHE];
   e.waitUntil(
     caches.keys().then(keys =>
-      Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)))
+      Promise.all(keys.filter(k => !KEEP.includes(k)).map(k => caches.delete(k)))
     )
   );
   self.clients.claim(); // take control immediately
 });
 
+// Network-first for field-essential GET data: try the network, cache a stamped
+// copy on success, and fall back to the last good copy when offline. The
+// stamp (X-PD-Cached-At header) lets the page tell a fresh response from a
+// cached one and show "last updated …" in the offline banner.
+async function networkFirstData(request) {
+  const cache = await caches.open(DATA_CACHE);
+  try {
+    const res = await fetch(request);
+    if (res && res.ok) {
+      try {
+        const body = await res.clone().blob();
+        const headers = new Headers(res.headers);
+        headers.set("X-PD-Cached-At", new Date().toISOString());
+        await cache.put(request, new Response(body, {
+          status: res.status,
+          statusText: res.statusText,
+          headers
+        }));
+      } catch (err) {
+        console.warn("[sw] data cache.put skipped:", err && err.message);
+      }
+    }
+    return res;
+  } catch (_) {
+    // Offline / network error — serve the last good copy if we have one.
+    const cached = await cache.match(request);
+    if (cached) return cached;
+    // Nothing cached for this request: hand back a clear offline marker the
+    // page can recognise instead of a generic network failure.
+    return new Response(
+      JSON.stringify({ error: "You're offline and this hasn't been saved for offline use yet.", offline: true }),
+      { status: 503, headers: { "Content-Type": "application/json", "X-PD-Offline": "1" } }
+    );
+  }
+}
+
 // Fetch — network first for same-origin, total bypass for everything else.
 self.addEventListener("fetch", e => {
   const url = e.request.url;
 
-  // Always go to network for API calls.
+  // API calls.
   if (url.includes("/.netlify/functions/") || url.includes("/document-proxy")) {
+    // Field-essential GET data: network-first with an offline cache fallback.
+    if (e.request.method === "GET" && isCacheableData(url)) {
+      e.respondWith(networkFirstData(e.request));
+      return;
+    }
+    // Everything else (logins, mutations, checkout, document streams) stays
+    // strictly online-only — never served from cache.
     e.respondWith(fetch(e.request));
     return;
   }

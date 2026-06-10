@@ -1442,6 +1442,64 @@
         font-size: 18px;
       }
     }
+
+    /* Offline / saved-data banner (shown when there's no connection and the
+       portal is rendering data the service worker saved earlier). */
+    .offline-banner {
+      position: sticky;
+      top: 0;
+      z-index: 2000;
+      background: #b45309;
+      color: #fff;
+      font-family: 'Inter', sans-serif;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      text-align: center;
+      padding: 8px 14px;
+    }
+    .offline-banner[hidden] { display: none; }
+    .offline-banner-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #fde68a;
+      margin-right: 7px;
+      vertical-align: middle;
+    }
+
+    /* "Save this trip for offline" bar (sits between the tiles and content). */
+    .offline-save-bar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin: 4px 24px 0;
+    }
+    .offline-save-bar[hidden] { display: none; }
+    .offline-save-btn {
+      background: transparent;
+      border: 1px solid #3B5998;
+      color: #3B5998;
+      font-family: 'Inter', sans-serif;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 1.5px;
+      padding: 9px 16px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .offline-save-btn:hover:not(:disabled) { background: #3B5998; color: #fff; }
+    .offline-save-btn:disabled { opacity: 0.55; cursor: default; }
+    .offline-save-status {
+      font-size: 12px;
+      color: #777;
+      letter-spacing: 0.3px;
+    }
+    @media (max-width: 768px) {
+      .offline-save-bar { margin: 4px 12px 0; }
+    }
   </style>
 </head>
 
@@ -1495,6 +1553,13 @@
        client logic is bypassed. -->
 
 
+</div>
+
+<div id="offlineSaveBar" class="offline-save-bar" hidden>
+  <button id="offlineSaveBtn" type="button" class="offline-save-btn" onclick="saveTripForOffline()">
+    SAVE THIS TRIP FOR OFFLINE
+  </button>
+  <span id="offlineSaveStatus" class="offline-save-status"></span>
 </div>
 
 <div id="content">Loading...</div>
@@ -1569,15 +1634,252 @@
         try {
           if (res && res.status === 401 && location.pathname.indexOf("login") === -1) {
             sessionStorage.clear();
-            location.href = "/login.html";
+            try { localStorage.removeItem("pdRememberedSession"); } catch (e) {}
+            // Forced/expired session: also wipe the on-device offline field
+            // data so a revoked device can't keep reading cached medical info.
+            // Redirect only after the delete resolves (with a hard timeout so a
+            // stalled cache op never strands the user).
+            var __redirected = false;
+            var __toLogin = function(){ if (__redirected) return; __redirected = true; location.href = "/login.html"; };
+            try {
+              if (window.caches && caches.delete) caches.delete("pd-field-data-v1").then(__toLogin, __toLogin);
+              else __toLogin();
+            } catch (e) { __toLogin(); }
+            setTimeout(__toLogin, 1500);
+          }
+          // Offline-data signals from the service worker: a cached copy carries
+          // X-PD-Cached-At; an uncached offline miss carries X-PD-Offline.
+          if (res && res.headers) {
+            var cachedAt = res.headers.get("X-PD-Cached-At");
+            if ((cachedAt || res.headers.get("X-PD-Offline")) &&
+                typeof window.__pdOnStaleData === "function") {
+              window.__pdOnStaleData(cachedAt || null);
+            }
           }
         } catch (e) {}
         return res;
       });
     };
   })();
+  // ----- Offline-friendly session gate -----------------------------------
+  // Online behaviour is unchanged: no session -> login. We additionally mirror
+  // a live session into localStorage so that if the app is reopened OFFLINE we
+  // can restore it and render the last-cached field data (read-only) instead
+  // of bouncing to a login page that can't work without a network. The
+  // remembered copy is expiry-bounded to match the 12h token life and is
+  // cleared on logout and on any 401.
+  const PD_REMEMBER_KEY = "pdRememberedSession";
+  const PD_REMEMBER_TTL_MS = 12 * 60 * 60 * 1000;
+
+  function pdRememberSession() {
+    try {
+      const em = sessionStorage.getItem("portalEmail");
+      if (!em) return;
+      localStorage.setItem(PD_REMEMBER_KEY, JSON.stringify({
+        email: em,
+        token: sessionStorage.getItem("portalToken") || "",
+        picked: sessionStorage.getItem("selectedPortalId") || "",
+        savedAt: Date.now()
+      }));
+    } catch (_) {}
+  }
+  function pdRestoreSessionIfOffline() {
+    try {
+      if (navigator.onLine) return false;
+      const raw = localStorage.getItem(PD_REMEMBER_KEY);
+      if (!raw) return false;
+      const s = JSON.parse(raw);
+      if (!s || !s.email || (Date.now() - (s.savedAt || 0)) > PD_REMEMBER_TTL_MS) return false;
+      sessionStorage.setItem("portalEmail", s.email);
+      if (s.token) sessionStorage.setItem("portalToken", s.token);
+      if (s.picked && !sessionStorage.getItem("selectedPortalId")) {
+        sessionStorage.setItem("selectedPortalId", s.picked);
+      }
+      return true;
+    } catch (_) { return false; }
+  }
+
+  if (!sessionStorage.getItem("portalEmail")) {
+    // Before giving up to a login page, try restoring a remembered session —
+    // but only when we're actually offline.
+    if (!pdRestoreSessionIfOffline()) window.location.href = "/login.html";
+  } else {
+    pdRememberSession();
+  }
   const email = sessionStorage.getItem("portalEmail");
-  if (!email) window.location.href = "/login.html";
+
+  // ----- Offline / saved-data banner --------------------------------------
+  // Shows a sticky bar when the user is offline (or viewing data the service
+  // worker served from its saved copy), including when that copy was last
+  // refreshed. Driven by online/offline events and by the X-PD-Cached-At /
+  // X-PD-Offline headers the SW sets (see the fetch wrapper above).
+  let __pdStaleSince = null;
+  function pdEnsureBanner() {
+    let el = document.getElementById("offlineBanner");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "offlineBanner";
+      el.className = "offline-banner";
+      el.hidden = true;
+      const put = () => document.body.insertBefore(el, document.body.firstChild);
+      if (document.body) put();
+      else document.addEventListener("DOMContentLoaded", put);
+    }
+    return el;
+  }
+  function pdFormatStamp(iso) {
+    try {
+      const d = new Date(iso);
+      if (!isNaN(d.getTime())) {
+        return d.toLocaleString("en-NZ", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+      }
+    } catch (_) {}
+    return "";
+  }
+  function pdShowOfflineBanner(stampIso) {
+    const el = pdEnsureBanner();
+    const iso = stampIso || __pdStaleSince;
+    const when = iso ? pdFormatStamp(iso) : "";
+    el.innerHTML = `<span class="offline-banner-dot"></span>OFFLINE — showing saved information` +
+      (when ? ` · last updated ${when}` : "");
+    el.hidden = false;
+  }
+  function pdHideOfflineBanner() {
+    const el = document.getElementById("offlineBanner");
+    if (el) el.hidden = true;
+  }
+  // Called by the fetch wrapper when the SW returns a cached/offline response.
+  window.__pdOnStaleData = function (stampIso) {
+    if (stampIso) __pdStaleSince = stampIso;
+    if (!navigator.onLine) pdShowOfflineBanner(stampIso);
+  };
+  window.addEventListener("offline", () => pdShowOfflineBanner());
+  window.addEventListener("online", () => pdHideOfflineBanner());
+  if (!navigator.onLine) pdShowOfflineBanner();
+
+  // ----- "Save this trip for offline" -------------------------------------
+  // Proactively warms the service worker's field-data cache so a leader can
+  // read the trip's essentials (student list, each student's medical info,
+  // key contacts, document checklist) with no signal. Throttled because the
+  // per-student endpoints scan Jotform server-side.
+  const PD_OFFLINE_SAVED_KEY = "pdOfflineSavedAt"; // { [portalId]: ISO }
+
+  function pdOfflineSavedMap() {
+    try { return JSON.parse(localStorage.getItem(PD_OFFLINE_SAVED_KEY) || "{}") || {}; }
+    catch (_) { return {}; }
+  }
+  function pdSetOfflineSaved(portalId, iso) {
+    try {
+      const m = pdOfflineSavedMap();
+      m[portalId] = iso;
+      localStorage.setItem(PD_OFFLINE_SAVED_KEY, JSON.stringify(m));
+    } catch (_) {}
+  }
+  function setOfflineSaveStatus(text) {
+    const el = document.getElementById("offlineSaveStatus");
+    if (el) el.textContent = text || "";
+  }
+
+  // Reveal the bar and show when this trip was last saved (called from init).
+  function initOfflineSaveBar() {
+    const bar = document.getElementById("offlineSaveBar");
+    if (!bar) return;
+    bar.hidden = false;
+    const pid = String(portalData.hs_object_id || "");
+    const saved = pid ? pdOfflineSavedMap()[pid] : null;
+    setOfflineSaveStatus(saved ? `Saved for offline · ${pdFormatStamp(saved)}` : "");
+  }
+
+  // Run an array of () => Promise tasks with limited concurrency.
+  async function pdRunPool(tasks, concurrency, onProgress) {
+    let i = 0, done = 0, failed = 0;
+    async function worker() {
+      while (i < tasks.length) {
+        const idx = i++;
+        try { await tasks[idx](); } catch (_) { failed++; }
+        done++;
+        if (onProgress) onProgress(done, tasks.length, failed);
+      }
+    }
+    const n = Math.max(1, Math.min(concurrency, tasks.length || 1));
+    await Promise.all(Array.from({ length: n }, worker));
+    return { failed };
+  }
+
+  // Fetch a URL purely to populate the SW cache, then discard the body.
+  async function pdWarm(url) {
+    const res = await fetch(url);
+    try { await res.text(); } catch (_) {}
+    if (res && res.headers && res.headers.get("X-PD-Offline")) throw new Error("offline");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    return res;
+  }
+
+  async function saveTripForOffline() {
+    const btn = document.getElementById("offlineSaveBtn");
+    if (!navigator.onLine) { setOfflineSaveStatus("You're offline — connect to save."); return; }
+    if (btn) btn.disabled = true;
+    setOfflineSaveStatus("Saving…");
+    let failed = 0;
+
+    try {
+      const pid = String(portalData.hs_object_id || "");
+
+      // 1. Core trip data + global config.
+      await pdRunPool([
+        () => pdWarm(adminViewing
+          ? `/.netlify/functions/portal?portalId=${encodeURIComponent(adminPortalId)}`
+          : (sessionStorage.getItem("selectedPortalId")
+              ? `/.netlify/functions/portal?email=${encodeURIComponent(email)}&picked=${encodeURIComponent(sessionStorage.getItem("selectedPortalId"))}`
+              : `/.netlify/functions/portal?email=${encodeURIComponent(email)}`)),
+        () => pdWarm(`/.netlify/functions/get-insurance`)
+      ], 2);
+
+      // 2. Student list (instructors/admins only — empty for regular users).
+      let students = [];
+      if (pid) {
+        try {
+          const res = await fetch(`/.netlify/functions/get-students?portalId=${encodeURIComponent(pid)}&email=${encodeURIComponent(email)}`);
+          const data = await res.json().catch(() => ({}));
+          if (Array.isArray(data.students)) students = data.students;
+        } catch (_) {}
+      }
+
+      // 3. Per-student medical + document checklist, throttled.
+      const withEmail = students.filter(s => s && s.email);
+      if (withEmail.length) {
+        const tasks = [];
+        for (const s of withEmail) {
+          const em = encodeURIComponent(s.email);
+          tasks.push(() => pdWarm(`/.netlify/functions/get-application-data?email=${em}`));
+          tasks.push(() => pdWarm(`/.netlify/functions/get-document-checklist?email=${em}`));
+        }
+        const r = await pdRunPool(tasks, 3, (done) => {
+          setOfflineSaveStatus(`Saving… ${Math.min(withEmail.length, Math.ceil(done / 2))}/${withEmail.length} students`);
+        });
+        failed += r.failed;
+      } else {
+        // Regular student: cache just their own medical + checklist.
+        const em = encodeURIComponent(email);
+        const r = await pdRunPool([
+          () => pdWarm(`/.netlify/functions/get-application-data?email=${em}`),
+          () => pdWarm(`/.netlify/functions/get-document-checklist?email=${em}`)
+        ], 2);
+        failed += r.failed;
+      }
+
+      const iso = new Date().toISOString();
+      if (pid) pdSetOfflineSaved(pid, iso);
+      setOfflineSaveStatus(
+        (failed ? `Saved with ${failed} item${failed === 1 ? "" : "s"} skipped · ` : "Saved for offline · ") + pdFormatStamp(iso)
+      );
+    } catch (err) {
+      console.error("[offline-save] failed:", err);
+      setOfflineSaveStatus("Couldn't save everything — try again on a better connection.");
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
 
   // ----- Admin viewing mode -----
   // Admins land on /admin.html after login, then click a trip to view. We
@@ -2511,6 +2813,7 @@
       safeRun("loadSection",            () => loadSection("trip_information_content"));
       safeRun("showInstallPrompt",      () => showInstallPrompt());
       safeRun("showDesktopQr",          () => showDesktopQr());
+      safeRun("offlineSaveStatus",      () => initOfflineSaveBar());
 
     } catch (err) {
       console.error("[init] threw:", err);
@@ -4331,6 +4634,12 @@
     sessionStorage.removeItem("portalEmail");
     sessionStorage.removeItem("adminRole");
     sessionStorage.removeItem("firstName");
+    // Drop the offline "remembered session" and any saved field data so a
+    // logged-out device can't read cached medical/contact info offline.
+    try { localStorage.removeItem("pdRememberedSession"); } catch (_) {}
+    try {
+      if (window.caches && caches.delete) await caches.delete("pd-field-data-v1");
+    } catch (_) {}
     window.location.href = "/login.html";
   }
 
