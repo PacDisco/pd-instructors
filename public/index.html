@@ -3381,45 +3381,88 @@
   // Stored as a Set so duplicate labels (the form has three "If you answered
   // YES..." textareas in different sections) all get matched when we filter
   // the backend's ordered field list.
+  // These are the EXACT question labels from the live "Pacific Discovery |
+  // Program Application Form" (Jotform 240277257210046). Keep them in sync if
+  // the form's wording changes — though isMedicalField() below also matches on
+  // keywords as a safety net so a small edit won't blank the modal.
   const TRIP_LEADER_APPLICATION_FIELDS = new Set([
-    // Passport
-    "Passport Number",
-    "Country of Issue on Passport",
-    "Expiry Date",
-    "Passport Cover Page Photo",
+    // Passport / travel
+    "Do you hold a current passport?",
+    "What is your passport number?",
+    "What country's passport do you hold?",
+    "I cannot submit my passport information because",
+    "When does it expire?",
     // Vitals
-    "Height",
-    "Weight",
-    // Medical
-    "Respiratory Problems or Asthma?",
-    "Migraines or Headaches?",
-    "Skin Disorders?",
-    "Muscular-skeletel Problems?",
-    "Diabetes?",
-    "Claustrophobia or Motion Sickness?",
-    "Neurological problems or seizures? (i.e. autism, etc.)",
-    "Allergic reactions to Medications?",
-    "Any chronic medical conditions? (heart conditions, hearing loss, IBS, etc.)",
-    "Any chronic mental health conditions? (i.e. psychosis, bipolar disorder, etc.)",
-    "Have you ever had any suicidal ideation?",
-    "Have you ever self-harmed?",
-    "Do you currently take, or have been prescribed, any medications?",
-    "If you answered YES to any of the above, please provide more information",
-    // Health
-    "Have you attended a mental health practitioner, more than once, in the last 2 years?",
-    "Do you suffer from anxiety, depression, ADHD or other mood disorders?",
-    "Have you ever been, or are you currently being treated for substance abuse?",
-    "Do you have any physical, psychological, or chronic conditions that may impact your participation in physical activities?",
-    "Have you been admitted to hospital in the last 3 years?",
-    "Any non-food relate allergies or illnesses?",
-    "Does the student have objection to blood transfusions? (in case of medical emergency)",
-    "Does the student have objection to immunisations?",
-    // Swim
-    "Are you a confident Swimmer over 50m?",
-    // Dietary
-    "Dietary Restrictions or Preferences eg Vegetarian, celiac, gluten free?",
-    "Do you have any food allergies?"
+    "Height (Feet & Inches)",
+    "Weight (lbs)",
+    // Health & Medical
+    "What is your swimming ability?",
+    "Are you a smoker?",
+    "Do you have any respiratory problems? e.g. Asthma",
+    "Do you get migraines?",
+    "Do you have any skin disorders?",
+    "Do you have muscular-skeletal problems?",
+    "Do you have Diabetes?",
+    "Do you have Claustrophobia or get motion sickness?",
+    "Do you have any of the following conditions: autism, adhd, a learning disability (e.g., dyslexia, dyscalculia) or any other neurodevelopmental condition?",
+    "Do you have any allergies?",
+    "Do you have any dietary requirements or preferences? e.g. Gluten, Dairy, Nuts, Vegetarian, etc.",
+    "Have you been seen by a mental health professional more than once in the past two years?",
+    "Have you ever been or are you currently being treated for substance abuse?",
+    "Do you have any physical, psychological or chronic condition that may impact your participation in physical activities?",
+    "Have you been hospitalized in the past three years?",
+    "Please list any medications you currently take, or will be taking on program",
+    "Are you fully vaccinated for Covid-19?"
   ]);
+
+  // ---- Medical-field matching (tolerant) -------------------------------------
+  // The curated whitelist above matches the application form's question text
+  // EXACTLY, so a small wording change in Jotform silently drops fields and the
+  // Medical Information modal ends up empty. To make the medical view resilient
+  // we match on a normalized label against (a) the curated whitelist and
+  // (b) a set of medical / health / passport / dietary keyword patterns.
+
+  // Lowercase, drop parentheticals like "(i.e. autism, etc.)", and collapse all
+  // non-alphanumerics to single spaces so punctuation/casing differences don't
+  // matter.
+  function normalizeLabel(s) {
+    return String(s || "")
+      .toLowerCase()
+      .replace(/\([^)]*\)/g, " ")
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+  }
+
+  // Pre-normalized curated whitelist (high-confidence exact-ish matches).
+  const TRIP_LEADER_FIELDS_NORM = new Set(
+    [...TRIP_LEADER_APPLICATION_FIELDS].map(normalizeLabel)
+  );
+
+  // Keyword/phrase patterns that identify a medical / health / passport /
+  // dietary field even when the live form's wording differs from the whitelist.
+  // Matched against the normalized label. Kept reasonably specific to avoid
+  // pulling in unrelated fields (e.g. terms & conditions, comments).
+  const MEDICAL_FIELD_PATTERNS = [
+    /passport/, /country of issue/, /expir/,
+    /\bheight\b/, /\bweight\b/, /smoker|smoking/,
+    /respiratory|asthma/, /migraine|headache/, /skin disorder|skin condition/,
+    /muscular|skeletal|skeletel/, /diabet/, /claustrophobia|motion sickness/,
+    /neurolog|seizure|epilep|autism/, /allerg/, /chronic/,
+    /medical condition|health condition|physical condition|psychological condition/,
+    /mental health/, /psychosis|bipolar|schizo/, /suicid/, /self ?harm/,
+    /medication|prescrib/, /anxiety|depression|adhd|mood disorder/,
+    /substance abuse/, /\bhospital/, /blood transfusion/,
+    /immunis|immuniz|vaccin/, /\bswim/, /diet|vegetarian|vegan|celiac|coeliac|gluten/,
+    /health practitioner/
+  ];
+
+  // True if a given application-field label looks medical/health-relevant.
+  function isMedicalField(label) {
+    const n = normalizeLabel(label);
+    if (!n) return false;
+    if (TRIP_LEADER_FIELDS_NORM.has(n)) return true;
+    return MEDICAL_FIELD_PATTERNS.some(re => re.test(n));
+  }
 
   // Click handler attached to each "VIEW APPLICATION DETAILS" button on a
   // trip-leader student card. Lazily fetches the application data the first
@@ -3471,7 +3514,7 @@
     }
 
     const all = Array.isArray(data.fields) ? data.fields : [];
-    const fields = all.filter(f => TRIP_LEADER_APPLICATION_FIELDS.has(f.label));
+    const fields = all.filter(f => isMedicalField(f.label));
 
     let metaHtml = "";
     if (data.submittedAt) {
@@ -4126,9 +4169,11 @@
 
     let fields = Array.isArray(data.fields) ? data.fields : [];
     if (tripLeaderOnly) {
-      // Trip leader view: only the medical / health / passport / dietary
-      // whitelist (defined in TRIP_LEADER_APPLICATION_FIELDS near the top).
-      fields = fields.filter(f => TRIP_LEADER_APPLICATION_FIELDS.has(f.label));
+      // Trip leader / medical view: only the medical / health / passport /
+      // dietary fields, matched tolerantly (see isMedicalField) so small
+      // differences between the live form and the curated whitelist don't
+      // leave the modal empty.
+      fields = fields.filter(f => isMedicalField(f.label));
     }
 
     let metaHtml = "";
@@ -4141,7 +4186,10 @@
     }
 
     if (fields.length === 0) {
-      return metaHtml + `<div class="application-detail-empty">No relevant fields found in this submission.</div>`;
+      const msg = tripLeaderOnly
+        ? "No medical information found in this student's application."
+        : "No relevant fields found in this submission.";
+      return metaHtml + `<div class="application-detail-empty">${msg}</div>`;
     }
 
     return metaHtml + fields.map(renderFullApplicationField).join("");
