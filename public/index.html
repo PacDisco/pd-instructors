@@ -3283,6 +3283,12 @@
                     onclick="openApplicationModal(this.dataset.email, this.dataset.studentName, true)">
               MEDICAL INFORMATION
             </button>
+            <button class="student-expand-btn" type="button"
+                    data-email="${attrEsc(student.email || "")}"
+                    data-student-name="${attrEsc(student.name || "")}"
+                    onclick="openDocumentsModal(this.dataset.email, this.dataset.studentName)">
+              UPLOADED DOCUMENTS
+            </button>
           `;
         } else if (showAppModal) {
           // Teacher tab: opens a modal with the FULL application submission.
@@ -3575,6 +3581,124 @@
       if (modal && !modal.hidden) closeApplicationModal();
     }
   });
+
+  // ----- Instructor Resources tab: per-student uploaded-documents popup -----
+  // Reuses the application modal shell (#appModal). An instructor fetches a
+  // specific student's uploads by email; get-uploaded-documents authorises this
+  // via the caller's admin_role (a plain student still only sees their own).
+  let __docFormIdsPromise = null;
+
+  // Pull the document-upload Jotform ID(s) out of the configured form URL(s).
+  function documentFormIdsFromRaw(raw) {
+    const out = [];
+    String(raw || "")
+      .split(/[\s,]+/)              // whitespace, newlines, commas
+      .map(s => s.trim())
+      .filter(s => /^https?:\/\//i.test(s))
+      .forEach(url => {
+        const m = url.match(/(\d{15,18})/);
+        if (m) out.push(m[1]);
+      });
+    return out;
+  }
+
+  // Resolve the configured document-upload form ID(s) once per page load.
+  // Prefers the trip record (portalData, already merged with the global record
+  // by portal.js); falls back to the global Portal record via get-insurance.
+  // Returns a comma-separated id string ("" if none configured).
+  function resolveDocumentFormIds() {
+    if (__docFormIdsPromise) return __docFormIdsPromise;
+    __docFormIdsPromise = (async () => {
+      let ids = documentFormIdsFromRaw(portalData.documents_upload_form);
+      if (ids.length === 0) {
+        try {
+          const res = await fetch(`/.netlify/functions/get-insurance`);
+          const data = await res.json();
+          ids = documentFormIdsFromRaw(data?.documents_upload_form);
+        } catch (_) { /* fall through with empty list */ }
+      }
+      return ids.join(",");
+    })();
+    return __docFormIdsPromise;
+  }
+
+  async function openDocumentsModal(email, name) {
+    const modal = document.getElementById("appModal");
+    const subject = document.getElementById("appModalSubject");
+    const body = document.getElementById("appModalBody");
+    const titleEl = document.getElementById("appModalTitle");
+    if (!modal || !body) return;
+
+    if (titleEl) titleEl.textContent = "UPLOADED DOCUMENTS";
+    if (subject) subject.textContent = name || "";
+    body.innerHTML = `<div class="application-detail-empty">LOADING DOCUMENTS…</div>`;
+    modal.hidden = false;
+    document.body.style.overflow = "hidden";
+
+    if (!email) {
+      body.innerHTML = `<div class="application-detail-empty">No email on this student record.</div>`;
+      return;
+    }
+
+    try {
+      const formIds = await resolveDocumentFormIds();
+      if (!formIds) {
+        body.innerHTML = `<div class="application-detail-empty">No document-upload form is configured.<br><small style="color:#999; font-size:11px;">Set <code>documents_upload_form</code> on the global Portal record.</small></div>`;
+        return;
+      }
+      const params = new URLSearchParams({ email, formIds });
+      const res = await fetch(`/.netlify/functions/get-uploaded-documents?${params.toString()}`);
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        let detail = `HTTP ${res.status}`;
+        try {
+          const j = JSON.parse(text);
+          if (j && (j.error || j.details)) detail += `: ${j.error || ""}${j.details ? ` — ${j.details}` : ""}`;
+        } catch (_) { if (text) detail += `: ${text.slice(0, 200)}`; }
+        body.innerHTML = `<div class="application-detail-empty">Could not load documents.<br><small style="color:#999; font-size:11px;">${attrEsc(detail)}</small></div>`;
+        return;
+      }
+      const data = await res.json();
+      body.innerHTML = renderStudentDocuments(data);
+    } catch (err) {
+      console.error("Documents modal fetch error:", err);
+      body.innerHTML = `<div class="application-detail-empty">Could not load documents.<br><small style="color:#999; font-size:11px;">${attrEsc(err.message || String(err))}</small></div>`;
+    }
+  }
+
+  function renderStudentDocuments(data) {
+    if (!data || data.error) {
+      return `<div class="application-detail-empty">Could not load documents${data?.error ? `: ${attrEsc(data.error)}` : ""}.</div>`;
+    }
+    const documents = Array.isArray(data.documents) ? data.documents : [];
+    let metaHtml = "";
+    if (data.warning) {
+      metaHtml = `<div class="app-modal-meta" style="color:#b45309;">Note: ${attrEsc(data.warning)}</div>`;
+    }
+    if (documents.length === 0) {
+      return metaHtml + `<div class="application-detail-empty">No documents uploaded by this student yet.</div>`;
+    }
+    const rows = documents.map(doc => {
+      const label = (doc.fieldLabel || "").trim() || doc.filename || "Document";
+      let when = "";
+      if (doc.uploadedAt) {
+        const d = new Date(doc.uploadedAt);
+        if (!isNaN(d.getTime())) {
+          when = d.toLocaleDateString("en-NZ", { year: "numeric", month: "short", day: "numeric" });
+        }
+      }
+      const sub = [doc.filename, when ? `Uploaded ${when}` : ""].filter(Boolean).join(" · ");
+      return `
+        <div class="application-field">
+          <div class="application-field-label">${attrEsc(label)}</div>
+          <div class="application-field-value">
+            <a href="${attrEsc(doc.url)}" target="_blank" rel="noopener" class="application-field-file">VIEW DOCUMENT</a>
+            ${sub ? `<div style="margin-top:4px; color:#999; font-size:11px; font-weight:400;">${attrEsc(sub)}</div>` : ""}
+          </div>
+        </div>`;
+    }).join("");
+    return metaHtml + rows;
+  }
 
   // ===========================================================================
   // FAST FACTS SHEET

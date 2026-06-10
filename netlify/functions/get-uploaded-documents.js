@@ -62,10 +62,18 @@ export async function handler(event) {
   try {
     const { formId, formIds } = event.queryStringParameters || {};
 
-    // Email from the verified token — a user only sees their own uploads.
+    // Caller identity from the verified token. A regular user (no admin_role)
+    // may only see their OWN uploads. Admins / instructors / teachers may pass
+    // ?email= to view a specified student's uploads — the "Uploaded Documents"
+    // button on the Instructor Resources tab relies on this (same pattern as
+    // get-application-data's medical / application modals).
     let identity;
     try { identity = await authenticate(event); } catch (e) { return authError(e); }
-    const email = identity.email;
+    const requested = String((event.queryStringParameters || {}).email || "").toLowerCase().trim();
+    if (requested && requested !== identity.email && !identity.role) {
+      return { statusCode: 403, body: JSON.stringify({ error: "Not authorized to view these documents." }) };
+    }
+    const email = requested || identity.email;
 
     if (!process.env.JOTFORM_API_KEY) {
       return {
