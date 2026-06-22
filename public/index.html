@@ -1320,6 +1320,34 @@
       padding-top: 24px;
     }
 
+    /* INSTRUCTOR PI FOLDER — document checklist (uploaded vs outstanding).
+       A selected option on the contact's instructor_documents property means
+       that document has been uploaded; everything else is still outstanding. */
+    .doc-checklist-summary {
+      font-size: 12px; color: #666; margin-bottom: 14px; letter-spacing: 0.3px;
+    }
+    .doc-checklist {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 8px;
+    }
+    .doc-check-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 12px; border: 1px solid #e5e7eb; border-radius: 6px;
+      background: #fafafa; font-size: 13px; line-height: 1.35;
+    }
+    .doc-check-item .doc-check-icon {
+      flex: 0 0 auto; width: 20px; height: 20px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 700; color: #fff;
+    }
+    .doc-check-item.uploaded { border-color: #c6e6cf; background: #f3faf5; }
+    .doc-check-item.uploaded .doc-check-icon { background: #2e9e5b; }
+    .doc-check-item.uploaded .doc-check-name { color: #1f6b3f; }
+    .doc-check-item.outstanding { border-color: #f1d7c9; background: #fdf6f2; }
+    .doc-check-item.outstanding .doc-check-icon { background: #e8694a; }
+    .doc-check-item.outstanding .doc-check-name { color: #a8472c; font-weight: 600; }
+    .doc-checklist-empty { font-size: 13px; color: #999; }
+
     /* RESOURCE FOLDERS (Instructor Resources tab) — cards */
     .folder-cards {
       display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
@@ -2057,6 +2085,70 @@
     return files && files.length
       ? `<div class="tl-link-grid">${files.map(instructorFileCard).join("")}</div>`
       : `<div class="manuals-empty">No files in this folder yet.</div>`;
+  }
+
+  // ============================================================
+  // INSTRUCTOR PI FOLDER — document checklist
+  // Reads the logged-in contact's `instructor_documents` multi-checkbox
+  // property via get-instructor-documents. A selected option means that
+  // document has been UPLOADED; everything else in the property's option
+  // list is still OUTSTANDING. Renders into #piDocChecklistContainer at
+  // the top of the PI Folder tab. Fully fault-tolerant — any failure
+  // leaves a small inline notice and never blocks the rest of the tab.
+  // ============================================================
+  function docCheckItem(label, uploaded) {
+    const cls  = uploaded ? "uploaded" : "outstanding";
+    const icon = uploaded ? "✓" : "!";
+    const aria = uploaded ? "Uploaded" : "Outstanding";
+    return `
+      <div class="doc-check-item ${cls}">
+        <span class="doc-check-icon" aria-label="${aria}" title="${aria}">${icon}</span>
+        <span class="doc-check-name">${attrEsc(label)}</span>
+      </div>`;
+  }
+
+  async function loadInstructorDocChecklist() {
+    const container = document.getElementById("piDocChecklistContainer");
+    if (!container) return;
+
+    let data;
+    try {
+      const res = await fetch("/.netlify/functions/get-instructor-documents");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      data = await res.json();
+    } catch (err) {
+      console.error("[loadInstructorDocChecklist] fetch failed:", err);
+      container.innerHTML = `<div class="doc-checklist-empty">Couldn't load the document checklist right now.</div>`;
+      return;
+    }
+
+    const options     = Array.isArray(data?.options)     ? data.options     : [];
+    const uploaded    = Array.isArray(data?.uploaded)    ? data.uploaded    : [];
+    const outstanding = Array.isArray(data?.outstanding) ? data.outstanding : [];
+
+    if (options.length === 0) {
+      container.innerHTML = `<div class="doc-checklist-empty">No documents have been configured for your account yet.</div>`;
+      return;
+    }
+
+    // Order: outstanding first (what still needs doing), then uploaded.
+    const uploadedSet = new Set(uploaded.map(v => String(v).toLowerCase()));
+    const ordered = [
+      ...outstanding.map(label => ({ label, uploaded: false })),
+      ...options
+        .filter(o => uploadedSet.has(String(o).toLowerCase()))
+        .map(label => ({ label, uploaded: true }))
+    ];
+
+    const total = options.length;
+    const done  = total - outstanding.length;
+    const summary = outstanding.length === 0
+      ? `All ${total} document${total === 1 ? "" : "s"} uploaded.`
+      : `${done} of ${total} uploaded · ${outstanding.length} still outstanding.`;
+
+    container.innerHTML =
+      `<div class="doc-checklist-summary">${attrEsc(summary)}</div>` +
+      `<div class="doc-checklist">${ordered.map(i => docCheckItem(i.label, i.uploaded)).join("")}</div>`;
   }
 
   // ============================================================
@@ -3139,9 +3231,22 @@
         //      Application Information modal.
         const linksHtml    = renderResourceLinkGrid(TEACHER_LINKS);
         const richTextHtml = portalData[field] || "";
-        content.innerHTML  = linksHtml + richTextHtml;
+        // Document checklist placeholder — sits at the TOP of the PI Folder
+        // tab. Populated async from the logged-in contact's
+        // instructor_documents property (selected option = uploaded).
+        const docChecklistHtml = `
+          <div class="docs-section" id="piDocChecklistSection">
+            <div class="docs-section-label sec-accent" style="--accent:#2e9e5b;">DOCUMENT CHECKLIST</div>
+            <div id="piDocChecklistContainer"><span style="font-size:13px; color:#999;">Loading document checklist...</span></div>
+          </div>`;
+        content.innerHTML  = docChecklistHtml + linksHtml + richTextHtml;
         content.style.opacity = 1;
         styleLinksAsButtons();
+        // Fire the checklist fetch in parallel with the student list — slots
+        // into the placeholder above when it returns.
+        loadInstructorDocChecklist().catch(err => {
+          console.error("Instructor doc checklist load error:", err);
+        });
         await loadStudentList(content, { applicationModal: true });
         return;
       }
