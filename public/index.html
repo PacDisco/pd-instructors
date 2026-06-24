@@ -2051,6 +2051,30 @@
     { label: "Fundraising Templates",  prop: "fundraising_templates" }
   ];
 
+  // ============================================================
+  // === EDIT THIS LIST TO ADD/RENAME AN INSTRUCTOR RESOURCE LINK ===
+  // Renders as DETAILS cards at the TOP of the Instructor Resources
+  // tab, ABOVE the RESOURCE FOLDERS section. Same rules as
+  // TRIP_LEADER_LINKS: a card only shows when its HubSpot URL property
+  // is non-empty on the trip record (or the global record); blanks are
+  // silently hidden.
+  //
+  // IMPORTANT: `prop` must match the property's INTERNAL name in HubSpot
+  // exactly (lowercase, spaces → "_", "&" → double "_"). The names below
+  // are best-guesses from the labels — verify each in HubSpot
+  // (Settings → Properties → open the property → "Internal name") and
+  // correct here if they differ, or the card won't appear.
+  //
+  // Also add each internal name to PORTAL_PROPERTIES in
+  // netlify/functions/portal.js so the value gets fetched.
+  // ============================================================
+  const INSTRUCTOR_RESOURCE_LINKS = [
+    { label: "Pre-Program Logistics", prop: "pre_program_logistics" },
+    { label: "Instructor Itinerary",  prop: "instructor_itinerary" },
+    { label: "Provider List",         prop: "provider_list" },
+    { label: "Instructor Budget",     prop: "instructor_budget" }
+  ];
+
   // Live-loads the Pacific Discovery Instructor Resources HubSpot Files
   // folder and renders its contents into #instructorFilesContainer (the
   // placeholder block injected at the top of the Instructor Resources
@@ -3263,6 +3287,16 @@
         //      Program record — anything the school types into HubSpot.
         //   3. The student list, with each card opening a Medical
         //      Information modal (filtered subset of the application form).
+        // DETAILS cards for the INSTRUCTOR_RESOURCE_LINKS HubSpot properties.
+        // Rendered in its own section directly above RESOURCE FOLDERS; the
+        // whole section is omitted if none of the properties have a value.
+        const instrResourceGrid = renderResourceLinkGrid(INSTRUCTOR_RESOURCE_LINKS);
+        const instrResourceSection = instrResourceGrid
+          ? `<div class="docs-section">
+            <div class="docs-section-label sec-accent" style="--accent:#3B5998;">KEY DOCUMENTS</div>
+            ${instrResourceGrid}
+          </div>`
+          : "";
         content.innerHTML = renderKeyContacts() + `<div class="docs-section">
             <div class="docs-section-label sec-accent" style="--accent:#e8694a;">QUICKLINKS</div>
             <div class="tl-link-grid">
@@ -3283,6 +3317,7 @@
               </div>
             </div>
           </div>
+          ` + instrResourceSection + `
           <div class="docs-section" id="instructorFoldersSection">
             <div class="docs-section-label sec-accent" style="--accent:#3B5998;">RESOURCE FOLDERS</div>
             <div id="instructorFoldersContainer"><span style="font-size:13px; color:#999;">Loading folders...</span></div>
