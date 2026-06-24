@@ -2154,7 +2154,7 @@
   // ============================================================
   // === EDIT THESE FOLDER DESCRIPTIONS ===
   // Short blurb shown on each Resource Folder card. Keyed by the folder's
-  // leading number (1-5) so it stays correct even if a folder is renamed.
+  // leading number (0-8) so it stays correct even if a folder is renamed.
   // Leave a key out (or blank) to show a card with no description.
   // ============================================================
   const FOLDER_DESCRIPTIONS = {
@@ -2209,7 +2209,7 @@
         : `<div class="manuals-empty">No files have been added to the Instructor Resources folder yet.</div>`;
     }
 
-    // ----- Numbered folders 1-5, each with its contents -----
+    // ----- Numbered folders 0-8, each with its contents -----
     const folders = Array.isArray(data?.folders) ? data.folders : [];
     if (foldersEl) {
       if (folders.length === 0) {
