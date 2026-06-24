@@ -288,7 +288,14 @@ export async function handler(event) {
       "emergency_numbers__escalation",
       "expense__reimbursement_policies",
       "device_policies",
-      "child_protection_policy"
+      "child_protection_policy",
+      // Instructor Resources tab — DETAILS cards shown above the resource
+      // folders (see INSTRUCTOR_RESOURCE_LINKS in index.html). Verify these
+      // internal names match HubSpot exactly.
+      "pre_program_logistics",
+      "instructor_itinerary",
+      "provider_list",
+      "instructor_budget"
     ].join(",");
 
     const tripPortalUrl   = `https://api.hubapi.com/crm/v3/objects/${OBJECT}/${portalId}?properties=${PORTAL_PROPERTIES}`;
