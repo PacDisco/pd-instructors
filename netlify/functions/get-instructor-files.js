@@ -75,9 +75,9 @@ export async function handler(event) {
       });
     }
 
-    // ----- Numbered subfolders (1-5) and their contents -----
+    // ----- Numbered subfolders (0-8) and their contents -----
     // The portal shows the subfolders of the Instructor Resources folder whose
-    // names begin with 1-5, each with its files. Live-read, so anything added
+    // names begin with 0-8, each with its files. Live-read, so anything added
     // to one of these folders in HubSpot appears here on the next load.
     // Fully fault-tolerant: any failure here just yields an empty folders list
     // and leaves the root file listing intact.
@@ -88,7 +88,7 @@ export async function handler(event) {
         .map(s => {
           const m = String(s.name || "").match(/^\s*(\d+)/);
           const num = m ? parseInt(m[1], 10) : null;
-          return (num && num >= 1 && num <= 5) ? { ...s, number: num } : null;
+          return (num != null && num >= 0 && num <= 8) ? { ...s, number: num } : null;
         })
         .filter(Boolean)
         // If two folders share a leading number, keep them both but order by
