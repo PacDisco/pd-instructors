@@ -293,6 +293,7 @@ export async function handler(event) {
       // folders (see INSTRUCTOR_RESOURCE_LINKS in index.html). Verify these
       // internal names match HubSpot exactly.
       "instructor_handbook",
+      "preprogram_logistics",
       "pre_program_logistics",
       "instructor_itinerary",
       "provider_list",
