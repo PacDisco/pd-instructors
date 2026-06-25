@@ -1348,6 +1348,17 @@
     .doc-check-item.outstanding .doc-check-name { color: #a8472c; font-weight: 600; }
     .doc-checklist-empty { font-size: 13px; color: #999; }
 
+    /* Embedded Jotform (Document Upload Form) at the bottom of the FORMS
+       section on the PI Folder tab. */
+    .instr-form-embed-title {
+      font-size: 13px; font-weight: 700; letter-spacing: 0.3px;
+      color: #212121; margin: 18px 0 10px;
+    }
+    .instr-form-embed {
+      width: 100%; min-height: 900px; border: 1px solid #e5e7eb;
+      border-radius: 6px; background: #fff; display: block;
+    }
+
     /* RESOURCE FOLDERS (Instructor Resources tab) — cards */
     .folder-cards {
       display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
@@ -2068,13 +2079,19 @@
     { label: "Instructor Device Policy",            id: "261722834653056" }
   ];
 
-  // Builds the FORMS link grid for the PI Folder tab. Each card opens the
-  // Jotform in a new tab, with the logged-in instructor's email passed as a
-  // query param so a matching Jotform field can prefill it.
+  // The Document Upload Form is embedded inline (iframe) at the bottom of the
+  // FORMS section so instructors can upload passport/licence/photos/certs
+  // without leaving the portal. Its submissions also surface in SUBMITTED
+  // DOCUMENTS (handled server-side in get-instructor-submissions).
+  const INSTRUCTOR_UPLOAD_FORM = { label: "Instructor Document Upload Form", id: "261607538438868" };
+
+  // Builds the FORMS link grid for the PI Folder tab, with the embedded
+  // upload form underneath. Each card opens the Jotform in a new tab, with
+  // the logged-in instructor's email passed as a query param so a matching
+  // Jotform field can prefill it.
   function renderInstructorFormLinks() {
-    if (!Array.isArray(INSTRUCTOR_FORMS) || INSTRUCTOR_FORMS.length === 0) return "";
     const callerEmail = sessionStorage.getItem("portalEmail") || "";
-    const cards = INSTRUCTOR_FORMS.map(f => {
+    const cards = (INSTRUCTOR_FORMS || []).map(f => {
       let href = `https://form.jotform.com/${encodeURIComponent(f.id)}`;
       if (callerEmail) href += `?email=${encodeURIComponent(callerEmail)}`;
       return `
@@ -2083,11 +2100,70 @@
           <a href="${attrEsc(href)}" target="_blank" rel="noopener" class="tl-link-btn">OPEN FORM</a>
         </div>`;
     }).join("");
+
+    // Embedded upload form (iframe). email query param prefills a matching
+    // field if the form has one; harmless otherwise.
+    let embedSrc = `https://form.jotform.com/${encodeURIComponent(INSTRUCTOR_UPLOAD_FORM.id)}`;
+    if (callerEmail) embedSrc += `?email=${encodeURIComponent(callerEmail)}`;
+    const embedHtml = `
+      <div class="instr-form-embed-title">${attrEsc(INSTRUCTOR_UPLOAD_FORM.label)}</div>
+      <iframe
+        class="instr-form-embed"
+        title="${attrEsc(INSTRUCTOR_UPLOAD_FORM.label)}"
+        src="${attrEsc(embedSrc)}"
+        allow="geolocation; microphone; camera; fullscreen"
+        loading="lazy"></iframe>`;
+
     return `
       <div class="docs-section" id="piFormsSection">
         <div class="docs-section-label sec-accent" style="--accent:#3B5998;">FORMS</div>
-        <div class="tl-link-grid">${cards}</div>
+        ${cards ? `<div class="tl-link-grid">${cards}</div>` : ""}
+        ${embedHtml}
       </div>`;
+  }
+
+  // ============================================================
+  // INSTRUCTOR PI FOLDER — submitted documents
+  // Pulls the logged-in instructor's own submissions (policy forms as PDFs +
+  // the upload form's files) from get-instructor-submissions and renders them
+  // as cards into #piSubmittedContainer. Fault-tolerant.
+  // ============================================================
+  function submittedDocCard(d) {
+    const title = d.label || d.formTitle || "Document";
+    let meta = d.kind === "pdf" ? "Submission PDF" : "Uploaded file";
+    if (d.uploadedAt) {
+      const dt = new Date(d.uploadedAt);
+      if (!isNaN(dt.getTime())) {
+        meta += " · " + dt.toLocaleDateString("en-NZ", { year: "numeric", month: "short", day: "numeric" });
+      }
+    }
+    return `
+      <div class="tl-link-card">
+        <div class="tl-link-title">${attrEsc(title)}</div>
+        <div class="tl-link-meta">${attrEsc(meta)}</div>
+        <a href="${attrEsc(d.url)}" target="_blank" rel="noopener" class="tl-link-btn">VIEW PDF</a>
+      </div>`;
+  }
+
+  async function loadInstructorSubmissions() {
+    const container = document.getElementById("piSubmittedContainer");
+    if (!container) return;
+    let data;
+    try {
+      const res = await fetch("/.netlify/functions/get-instructor-submissions");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      data = await res.json();
+    } catch (err) {
+      console.error("[loadInstructorSubmissions] fetch failed:", err);
+      container.innerHTML = `<div class="doc-checklist-empty">Couldn't load your submitted documents right now.</div>`;
+      return;
+    }
+    const docs = Array.isArray(data?.documents) ? data.documents : [];
+    if (docs.length === 0) {
+      container.innerHTML = `<div class="doc-checklist-empty">You haven't submitted any documents yet. Use the forms below to get started.</div>`;
+      return;
+    }
+    container.innerHTML = `<div class="tl-link-grid">${docs.map(submittedDocCard).join("")}</div>`;
   }
 
   const TEACHER_LINKS = [
@@ -3323,6 +3399,10 @@
         // INSTRUCTOR PI FOLDER tab. Sections, top to bottom:
         //   1. Document checklist (instructor_documents — uploaded vs outstanding).
         //   2. The teacher_information_content rich-text block.
+        //   3. SUBMITTED DOCUMENTS — the instructor's own submissions (policy
+        //      forms as PDFs + the upload form's files), via get-instructor-submissions.
+        //   4. FORMS — link cards for the policy forms, with the Document
+        //      Upload Form embedded inline (iframe) at the bottom.
         // NOTE: the Student Manual resource-link grid and the student list
         // (with payment info) were intentionally removed from this tab — it's
         // the instructor's own PI folder, not a student-facing view.
@@ -3335,16 +3415,26 @@
             <div class="docs-section-label sec-accent" style="--accent:#2e9e5b;">DOCUMENT CHECKLIST</div>
             <div id="piDocChecklistContainer"><span style="font-size:13px; color:#999;">Loading document checklist...</span></div>
           </div>`;
-        // FORMS link grid sits at the BOTTOM of the tab (below the checklist
-        // and rich text). styleLinksAsButtons() runs after, but these links
-        // already carry the tl-link-btn class so they keep their styling.
+        // Submitted documents placeholder — populated async from the
+        // instructor's own submissions across the onboarding forms.
+        const submittedHtml = `
+          <div class="docs-section" id="piSubmittedSection">
+            <div class="docs-section-label sec-accent" style="--accent:#d6a380;">SUBMITTED DOCUMENTS</div>
+            <div id="piSubmittedContainer"><span style="font-size:13px; color:#999;">Loading submitted documents...</span></div>
+          </div>`;
+        // FORMS link grid + embedded upload form sit at the BOTTOM of the tab.
+        // styleLinksAsButtons() runs after, but these links already carry the
+        // tl-link-btn class so they keep their styling.
         const formsHtml = renderInstructorFormLinks();
-        content.innerHTML  = docChecklistHtml + richTextHtml + formsHtml;
+        content.innerHTML  = docChecklistHtml + richTextHtml + submittedHtml + formsHtml;
         content.style.opacity = 1;
         styleLinksAsButtons();
-        // Populate the checklist from the contact's instructor_documents.
+        // Populate the checklist + submitted documents in parallel.
         loadInstructorDocChecklist().catch(err => {
           console.error("Instructor doc checklist load error:", err);
+        });
+        loadInstructorSubmissions().catch(err => {
+          console.error("Instructor submissions load error:", err);
         });
         return;
       }
