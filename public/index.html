@@ -1512,12 +1512,20 @@
     /* "Save this trip for offline" bar (sits between the tiles and content). */
     .offline-save-bar {
       display: flex;
+      flex-direction: column;
       align-items: center;
-      gap: 12px;
+      justify-content: center;
+      text-align: center;
+      gap: 6px;
       flex-wrap: wrap;
-      margin: 4px 24px 0;
+      margin: 4px auto 0;
     }
     .offline-save-bar[hidden] { display: none; }
+    .offline-save-note {
+      font-size: 12px;
+      color: #999;
+      letter-spacing: 0.3px;
+    }
     .offline-save-btn {
       background: transparent;
       border: 1px solid #3B5998;
@@ -1600,6 +1608,7 @@
     SAVE THIS TRIP FOR OFFLINE
   </button>
   <span id="offlineSaveStatus" class="offline-save-status"></span>
+  <span class="offline-save-note">Saved trips are available offline for 12 hours from when you save.</span>
 </div>
 
 <div id="content">Loading...</div>
@@ -2042,6 +2051,45 @@
   // record (or the global record) will surface them on whichever
   // tabs reference them, so you don't need duplicate fields per tab.
   // ============================================================
+  // ============================================================
+  // === EDIT THIS LIST TO ADD/RENAME AN INSTRUCTOR FORM LINK ===
+  // Forms shown in the FORMS section at the bottom of the INSTRUCTOR PI
+  // FOLDER tab. Each links the instructor straight to the live Jotform.
+  // Positions 7 & 8 (the Instructor Contract Form + its approval Workflow)
+  // are intentionally omitted — the contract is handled via its signing
+  // flow. The "Clone of…" duplicate and the MASTER.docx (a document, not a
+  // form) are also omitted. To add one back, drop its id + label here.
+  // ============================================================
+  const INSTRUCTOR_FORMS = [
+    { label: "Instructor Personal Information",     id: "261748248196873" },
+    { label: "Instructor Money and Credit Card Policy", id: "261726712606861" },
+    { label: "Instructor Flight Policy",            id: "261727594157871" },
+    { label: "Instructor Drug & Alcohol Policy",    id: "261727420881863" },
+    { label: "Instructor Device Policy",            id: "261722834653056" }
+  ];
+
+  // Builds the FORMS link grid for the PI Folder tab. Each card opens the
+  // Jotform in a new tab, with the logged-in instructor's email passed as a
+  // query param so a matching Jotform field can prefill it.
+  function renderInstructorFormLinks() {
+    if (!Array.isArray(INSTRUCTOR_FORMS) || INSTRUCTOR_FORMS.length === 0) return "";
+    const callerEmail = sessionStorage.getItem("portalEmail") || "";
+    const cards = INSTRUCTOR_FORMS.map(f => {
+      let href = `https://form.jotform.com/${encodeURIComponent(f.id)}`;
+      if (callerEmail) href += `?email=${encodeURIComponent(callerEmail)}`;
+      return `
+        <div class="tl-link-card">
+          <div class="tl-link-title">${attrEsc(f.label)}</div>
+          <a href="${attrEsc(href)}" target="_blank" rel="noopener" class="tl-link-btn">OPEN FORM</a>
+        </div>`;
+    }).join("");
+    return `
+      <div class="docs-section" id="piFormsSection">
+        <div class="docs-section-label sec-accent" style="--accent:#3B5998;">FORMS</div>
+        <div class="tl-link-grid">${cards}</div>
+      </div>`;
+  }
+
   const TEACHER_LINKS = [
     { label: "Student Manual",         prop: "student_manual" },
     { label: "Leader Manual",          prop: "leader_manual" },
@@ -3287,7 +3335,11 @@
             <div class="docs-section-label sec-accent" style="--accent:#2e9e5b;">DOCUMENT CHECKLIST</div>
             <div id="piDocChecklistContainer"><span style="font-size:13px; color:#999;">Loading document checklist...</span></div>
           </div>`;
-        content.innerHTML  = docChecklistHtml + richTextHtml;
+        // FORMS link grid sits at the BOTTOM of the tab (below the checklist
+        // and rich text). styleLinksAsButtons() runs after, but these links
+        // already carry the tl-link-btn class so they keep their styling.
+        const formsHtml = renderInstructorFormLinks();
+        content.innerHTML  = docChecklistHtml + richTextHtml + formsHtml;
         content.style.opacity = 1;
         styleLinksAsButtons();
         // Populate the checklist from the contact's instructor_documents.
