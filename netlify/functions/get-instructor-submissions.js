@@ -32,12 +32,44 @@
 import { authenticate, authError } from "./_shared/auth.js";
 import { proxyRef } from "./_shared/docref.js";
 
-// Policy / info forms whose submission is rendered as a PDF. (Positions 7 & 8
-// — the Contract Form + its Workflow — and the "Clone of…" duplicate and the
-// MASTER.docx are intentionally excluded.)
+// Policy / info / contract forms whose submission is rendered as a PDF.
+//   261748248196873  Instructor Personal Information
+//   261726712606861  Instructor Money and Credit Card Policy
+//   261727467730867  Clone of Instructor Money and Credit Card Policy
+//   261727594157871  Instructor Flight Policy
+//   261727420881863  Instructor Drug & Alcohol Policy
+//   261722834653056  Instructor Device Policy
+//   261608232937056  Instructor Contract Form — holds the signed "Instructor
+//                    Agreement Contract - MASTER" submissions (Jotform Sign).
 const PDF_FORM_IDS = (process.env.INSTRUCTOR_PDF_FORM_IDS ||
-  "261748248196873,261726712606861,261727594157871,261727420881863,261722834653056")
+  "261748248196873,261726712606861,261727467730867,261727594157871,261727420881863,261722834653056,261608232937056")
   .split(",").map(s => s.trim()).filter(Boolean);
+
+// Optional per-form display-name overrides (the Jotform title is used when a
+// form isn't listed here). Keeps the SUBMITTED DOCUMENTS labels clean.
+const FORM_LABEL_OVERRIDES = {
+  "261608232937056": "Instructor Agreement Contract",
+  "261727467730867": "Instructor Money and Credit Card Policy (Clone)"
+};
+
+// Forms whose PDF is a "PDF document" (Jotform Sign / fill-from-PDF) — these
+// render via the pdf-converter/fill-pdf endpoint instead of generatePDF, which
+// returns the actual signed MASTER document rather than a data dump.
+const FILL_PDF_FORM_IDS = new Set(
+  (process.env.INSTRUCTOR_FILL_PDF_FORM_IDS || "261608232937056")
+    .split(",").map(s => s.trim()).filter(Boolean)
+);
+
+// Build the (unsigned-by-us, key-injected-by-proxy) Jotform PDF URL for a
+// submission. Sign documents use fill-pdf; regular forms use generatePDF.
+function pdfApiUrl(base, formId, sid) {
+  if (FILL_PDF_FORM_IDS.has(String(formId))) {
+    return `${base}/pdf-converter/${encodeURIComponent(formId)}/fill-pdf` +
+      `?download=1&submissionID=${encodeURIComponent(sid)}`;
+  }
+  return `${base}/generatePDF?formID=${encodeURIComponent(formId)}` +
+    `&submissionID=${encodeURIComponent(sid)}&download=1`;
+}
 
 // Forms whose submissions carry uploaded files we surface individually.
 const UPLOAD_FORM_IDS = (process.env.INSTRUCTOR_UPLOAD_FORM_IDS ||
@@ -95,6 +127,7 @@ async function loadPdfFormDocs(formId, email, apiKey, base) {
       fetchFormTitle(formId, apiKey, base),
       fetchSubmissions(formId, apiKey, base)
     ]);
+    const label = FORM_LABEL_OVERRIDES[String(formId)] || title;
     const out = [];
     for (const s of subs) {
       if (submissionEmail(s) !== email) continue;
@@ -103,16 +136,14 @@ async function loadPdfFormDocs(formId, email, apiKey, base) {
       // PDF render of the submission via the Jotform API. We sign the URL
       // WITHOUT the api key — the /document-proxy edge function injects it
       // (and the submission id stays hidden inside the signed ref).
-      const pdfUrl = `${base}/generatePDF?formID=${encodeURIComponent(formId)}` +
-        `&submissionID=${encodeURIComponent(sid)}&download=1`;
-      const url = proxyRef(pdfUrl);
+      const url = proxyRef(pdfApiUrl(base, formId, sid));
       if (!url) continue;
       out.push({
         formId,
-        formTitle: title,
+        formTitle: label,
         kind: "pdf",
-        label: title,
-        filename: `${sanitise(title)}.pdf`,
+        label,
+        filename: `${sanitise(label)}.pdf`,
         uploadedAt: s.created_at || null,
         url
       });
