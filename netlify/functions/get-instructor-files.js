@@ -75,33 +75,48 @@ export async function handler(event) {
       });
     }
 
-    // ----- Numbered subfolders (0-8) and their contents -----
-    // The portal shows the subfolders of the Instructor Resources folder whose
-    // names begin with 0-8, each with its files. Live-read, so anything added
-    // to one of these folders in HubSpot appears here on the next load.
-    // Fully fault-tolerant: any failure here just yields an empty folders list
-    // and leaves the root file listing intact.
+    // ----- Numbered subfolders AND top-level numbered documents (0-8) -----
+    // The portal's RESOURCE FOLDERS section shows, in one ordered list:
+    //   - subfolders of the Instructor Resources folder whose names begin 0-8
+    //     (each with its nested tree), and
+    //   - files sitting directly in the Instructor Resources folder whose
+    //     names begin 0-8 (surfaced as direct-link cards).
+    // Both are interleaved and ordered by their leading number, so a document
+    // named "2. Itinerary.pdf" slots between folders "1." and "3.".
+    // Live-read, so anything added in HubSpot appears on the next load.
+    // Fully fault-tolerant: any failure here just yields an empty list and
+    // leaves the root file listing intact. Each item carries a `kind` of
+    // "folder" or "file" so the frontend can render/route it correctly.
     let folders = [];
     try {
       const subs = await fetchSubfolders(folderId, headers);
-      const numbered = subs
+      const numberedFolders = subs
         .map(s => {
           const m = String(s.name || "").match(/^\s*(\d+)/);
           const num = m ? parseInt(m[1], 10) : null;
           return (num != null && num >= 0 && num <= 8) ? { ...s, number: num } : null;
         })
-        .filter(Boolean)
-        // If two folders share a leading number, keep them both but order by
-        // number then name for a stable, predictable display.
-        .sort((a, b) => (a.number - b.number) || a.name.localeCompare(b.name, "en", { sensitivity: "base" }));
+        .filter(Boolean);
+
+      // Top-level files whose names begin with a number 0-8. Reuses the
+      // already-fetched root listing, so no extra HubSpot calls.
+      const numberedFiles = (root.files || [])
+        .map(f => {
+          const m = String(f.name || "").match(/^\s*(\d+)/);
+          const num = m ? parseInt(m[1], 10) : null;
+          return (num != null && num >= 0 && num <= 8) ? { ...f, number: num } : null;
+        })
+        .filter(Boolean);
 
       // Each numbered folder carries a full nested tree (subfolders + files),
       // bounded by depth and a per-request folder budget so a deep/wide tree
       // can't blow the function timeout.
       const budget = { count: 0 };
-      for (const sub of numbered) {
+      const folderItems = [];
+      for (const sub of numberedFolders) {
         const tree = await loadFolderTree(sub.id, headers, 1, budget);
-        folders.push({
+        folderItems.push({
+          kind: "folder",
           id: sub.id,
           name: sub.name,
           number: sub.number,
@@ -109,6 +124,24 @@ export async function handler(event) {
           folders: tree.folders
         });
       }
+
+      const fileItems = numberedFiles.map(f => ({
+        kind: "file",
+        id: f.id,
+        name: f.name,
+        number: f.number,
+        url: f.url,
+        extension: f.extension,
+        size: f.size,
+        updatedAt: f.updatedAt
+      }));
+
+      // Interleave folders + documents, ordered by leading number then name.
+      // Numeric-aware name compare keeps "2." before "10." on ties.
+      folders = [...folderItems, ...fileItems].sort(
+        (a, b) => (a.number - b.number) ||
+          a.name.localeCompare(b.name, "en", { numeric: true, sensitivity: "base" })
+      );
     } catch (e) {
       console.warn("[get-instructor-files] subfolder listing failed:", e && e.message ? e.message : e);
     }
