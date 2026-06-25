@@ -1,116 +1,178 @@
-// Proxies a Jotform-hosted file through Netlify so portal users can view
+// Streams a Jotform-hosted file through Netlify so portal users can view
 // their uploaded documents without needing a Jotform account.
 //
-// Why: Jotform's submission file URLs (https://www.jotform.com/uploads/...)
-// require the viewer to be signed into Jotform unless the form is in a very
-// permissive privacy mode. Rather than make every parent log into Jotform,
-// this function fetches the file server-side using JOTFORM_API_KEY (which
-// stays in Netlify env vars and never reaches the browser), then streams the
-// bytes back to the parent.
+// This is the EDGE-FUNCTION version of get-document. It exists because the
+// regular serverless function caps responses at ~6MB (after base64 encoding),
+// and a single iPhone portrait photo is often 4–8MB raw — which became
+// "Function.ResponseSizeTooLarge" once base64'd. Edge functions stream the
+// upstream response body straight through with no buffering, lifting that
+// cap to ~20MB and eliminating the base64 overhead entirely.
 //
-// Input (querystring):
+// Inputs (querystring):
 //   url — the full Jotform file URL returned by /form/{id}/submissions
 //
-// Required env var: JOTFORM_API_KEY
+// Required env var (Netlify): JOTFORM_API_KEY
 //
-// Limits worth knowing about:
-//   - Netlify Functions cap responses at ~6MB. Files larger than ~4.5MB
-//     (after base64 encoding) will fail. Most uploaded documents are well
-//     under that.
-//   - 10-second function timeout. Slow upstream fetches will be cut off.
+// Frontend integration:
+//   Build URLs like `/document-proxy?url=<encoded jotform URL>` from
+//   get-students.js (portrait photos) and get-uploaded-documents.js
+//   (document uploads). Both have been updated.
 
-import { verifyDocRef } from "./_shared/docref.js";
+export default async (request, context) => {
+  const url = new URL(request.url);
 
-export async function handler(event) {
-  try {
-    // Only an opaque, HMAC-signed ref is accepted (see _shared/docref.js).
-    // The raw Jotform URL — whose path contains the submission ID — never
-    // travels through the client. (Edge /document-proxy is the primary path;
-    // this fallback is kept in lockstep so it can't be an open relay.)
-    const { ref } = event.queryStringParameters || {};
-    if (!ref) {
-      return { statusCode: 400, body: JSON.stringify({ error: "Missing ref" }) };
-    }
-    if (!process.env.JOTFORM_API_KEY) {
-      return {
-        statusCode: 500,
-        body: JSON.stringify({
-          error: "Jotform is not configured",
-          details: "Set JOTFORM_API_KEY in Netlify environment variables."
-        })
-      };
-    }
-
-    const decodedUrl = verifyDocRef(ref);
-    if (!decodedUrl) {
-      return { statusCode: 403, body: JSON.stringify({ error: "Invalid or expired reference" }) };
-    }
-
-    // Refuse to proxy anything that isn't a Jotform URL — this endpoint
-    // would otherwise be an open relay for any URL on the internet.
-    let target;
-    try {
-      target = new URL(decodedUrl);
-    } catch (_) {
-      return { statusCode: 400, body: JSON.stringify({ error: "Invalid url" }) };
-    }
-    const host = target.hostname.toLowerCase();
-    const isJotform = (
-      host === "jotform.com" || host.endsWith(".jotform.com") ||
-      host === "jotfor.ms"   || host.endsWith(".jotfor.ms")
-    );
-    if (!isJotform) {
-      return { statusCode: 400, body: JSON.stringify({ error: "Only Jotform URLs are allowed" }) };
-    }
-
-    // Append the API key so Jotform releases the file for download. This
-    // happens server-side; the parent never sees it.
-    target.searchParams.set("apiKey", process.env.JOTFORM_API_KEY);
-
-    const upstream = await fetch(target.toString(), { redirect: "follow" });
-    if (!upstream.ok) {
-      const text = await upstream.text().catch(() => "");
-      // Log to Netlify function logs so we can diagnose why a particular
-      // file fetch failed (HIPAA-encrypted form, key scope, regional CDN, etc).
-      console.warn(
-        `[get-document] upstream non-OK ${upstream.status} for ${target.host}${target.pathname} — ${text.slice(0, 200)}`
-      );
-      return {
-        statusCode: upstream.status,
-        body: JSON.stringify({
-          error: `Jotform returned ${upstream.status}`,
-          host: target.host,
-          path: target.pathname,
-          details: text.slice(0, 500)
-        })
-      };
-    }
-
-    const contentType =
-      upstream.headers.get("content-type") || "application/octet-stream";
-    const filename = decodeURIComponent(
-      target.pathname.split("/").pop() || "document"
-    ).replace(/"/g, "");
-
-    const buf = await upstream.arrayBuffer();
-    const base64 = Buffer.from(buf).toString("base64");
-
-    return {
-      statusCode: 200,
-      headers: {
-        "Content-Type": contentType,
-        "Content-Disposition": `inline; filename="${filename}"`,
-        "Cache-Control": "private, max-age=300"
-      },
-      body: base64,
-      isBase64Encoded: true
-    };
-
-  } catch (err) {
-    console.error("ERROR:", err);
-    return {
-      statusCode: 500,
-      body: JSON.stringify({ error: err.message })
-    };
+  // The browser only ever gets an opaque, HMAC-signed `ref` (see
+  // _shared/docref.js). We verify + decode it server-side, so the real
+  // Jotform URL (and the submission ID in its path) never reaches the client.
+  // Raw `?url=` is intentionally no longer accepted.
+  const ref = url.searchParams.get("ref");
+  if (!ref) {
+    return jsonResponse({ error: "Missing ref" }, 400);
   }
+  const secret = Netlify.env.get("SESSION_SECRET");
+  if (!secret) {
+    return jsonResponse({ error: "Server is not configured" }, 500);
+  }
+  const target = await verifyRef(ref, secret);
+  if (!target) {
+    return jsonResponse({ error: "Invalid or expired reference" }, 403);
+  }
+
+  // Validate the decoded upstream URL.
+  let parsed;
+  try {
+    parsed = new URL(target);
+  } catch (_) {
+    return jsonResponse({ error: "Invalid url" }, 400);
+  }
+
+  const host = parsed.hostname.toLowerCase();
+  const isJotform = (
+    host === "jotform.com" || host.endsWith(".jotform.com") ||
+    host === "jotfor.ms"   || host.endsWith(".jotfor.ms")
+  );
+  // HubSpot file CDN hosts. We allow these so that leader-card photos
+  // (cross-origin HubSpot images that iOS Safari sometimes refuses to
+  // render in <img> when fetched through a service worker) can be
+  // proxied as same-origin and rendered reliably on every device.
+  const isHubSpotCdn = (
+    /\.hubspotusercontent\b/i.test(host) ||  // *.fs1.hubspotusercontent-na1.net etc.
+    host.endsWith(".hubspot.com") ||
+    host === "hubspot.com" ||
+    /\.hubapi\.com$/i.test(host)
+  );
+  if (!isJotform && !isHubSpotCdn) {
+    return jsonResponse({
+      error: "Only Jotform or HubSpot URLs are allowed",
+      host
+    }, 400);
+  }
+
+  // Per-host upstream config. Jotform requires the API key in the URL;
+  // HubSpot CDN URLs are public and sometimes already signed.
+  if (isJotform) {
+    const apiKey = Netlify.env.get("JOTFORM_API_KEY");
+    if (!apiKey) {
+      return jsonResponse({
+        error: "Jotform is not configured",
+        details: "Set JOTFORM_API_KEY in Netlify environment variables."
+      }, 500);
+    }
+    // Most Jotform endpoints accept `apiKey`; the pdf-converter/fill-pdf
+    // endpoint expects lowercase `apikey`. Set both — harmless, server-side,
+    // and the key never reaches the browser either way.
+    parsed.searchParams.set("apiKey", apiKey);
+    parsed.searchParams.set("apikey", apiKey);
+  }
+
+  let upstream;
+  try {
+    upstream = await fetch(parsed.toString(), { redirect: "follow" });
+  } catch (err) {
+    console.error(`[document-proxy] fetch threw for ${parsed.host}${parsed.pathname}:`, err?.message || err);
+    return jsonResponse({ error: "Upstream fetch failed", details: String(err?.message || err) }, 502);
+  }
+
+  if (!upstream.ok) {
+    const text = await upstream.text().catch(() => "");
+    console.warn(
+      `[document-proxy] upstream non-OK ${upstream.status} for ${parsed.host}${parsed.pathname} — ${text.slice(0, 200)}`
+    );
+    return jsonResponse({
+      error: `Jotform returned ${upstream.status}`,
+      host: parsed.host,
+      path: parsed.pathname,
+      details: text.slice(0, 500)
+    }, upstream.status);
+  }
+
+  const contentType = upstream.headers.get("content-type") || "application/octet-stream";
+  const filename = decodeURIComponent(
+    parsed.pathname.split("/").pop() || "document"
+  ).replace(/"/g, "");
+
+  // Pass the upstream body straight through. ReadableStream → ReadableStream,
+  // no .arrayBuffer(), no base64. This is the whole reason we're an edge fn.
+  return new Response(upstream.body, {
+    status: 200,
+    headers: {
+      "Content-Type": contentType,
+      "Content-Disposition": `inline; filename="${filename}"`,
+      "Cache-Control": "private, max-age=300"
+    }
+  });
+};
+
+function jsonResponse(payload, status) {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { "Content-Type": "application/json" }
+  });
 }
+
+// Verify a signed doc-ref token and return the decoded URL, or null. Mirrors
+// netlify/functions/_shared/docref.js exactly:
+//   token = base64url(JSON({ u, e })) + "." + hex(HMAC_SHA256(payload))
+async function verifyRef(token, secret) {
+  const dot = token.lastIndexOf(".");
+  if (dot < 1) return null;
+  const payload = token.slice(0, dot);
+  const sigHex = token.slice(dot + 1);
+  const enc = new TextEncoder();
+  let ok = false;
+  try {
+    const key = await crypto.subtle.importKey(
+      "raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]
+    );
+    ok = await crypto.subtle.verify("HMAC", key, hexToBytes(sigHex), enc.encode(payload));
+  } catch (_) {
+    return null;
+  }
+  if (!ok) return null;
+  let obj;
+  try { obj = JSON.parse(b64urlDecode(payload)); } catch (_) { return null; }
+  if (!obj || !obj.u || !obj.e || Date.now() > Number(obj.e)) return null;
+  return String(obj.u);
+}
+
+function hexToBytes(hex) {
+  if (typeof hex !== "string" || hex.length % 2 || !/^[0-9a-fA-F]*$/.test(hex)) return new Uint8Array();
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16);
+  return out;
+}
+
+function b64urlDecode(s) {
+  let t = String(s).replace(/-/g, "+").replace(/_/g, "/");
+  while (t.length % 4) t += "=";
+  const bin = atob(t);
+  const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
+// Bind this edge function to /document-proxy. The frontend (and the URL
+// builders inside get-students.js / get-uploaded-documents.js) all hit this
+// path now instead of /.netlify/functions/get-document.
+export const config = {
+  path: "/document-proxy"
+};
