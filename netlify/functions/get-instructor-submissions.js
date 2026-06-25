@@ -35,21 +35,22 @@ import { proxyRef } from "./_shared/docref.js";
 // Policy / info / contract forms whose submission is rendered as a PDF.
 //   261748248196873  Instructor Personal Information
 //   261726712606861  Instructor Money and Credit Card Policy
-//   261727467730867  Clone of Instructor Money and Credit Card Policy
+//   261727467730867  Instructor First Aid Kit Policy
 //   261727594157871  Instructor Flight Policy
 //   261727420881863  Instructor Drug & Alcohol Policy
 //   261722834653056  Instructor Device Policy
+//   261756536759069  Pacific Discovery — Vehicle (Van) Use Policy & Instructor Agreement
 //   261608232937056  Instructor Contract Form — holds the signed "Instructor
 //                    Agreement Contract - MASTER" submissions (Jotform Sign).
 const PDF_FORM_IDS = (process.env.INSTRUCTOR_PDF_FORM_IDS ||
-  "261748248196873,261726712606861,261727467730867,261727594157871,261727420881863,261722834653056,261608232937056")
+  "261748248196873,261726712606861,261727467730867,261727594157871,261727420881863,261722834653056,261756536759069,261608232937056")
   .split(",").map(s => s.trim()).filter(Boolean);
 
 // Optional per-form display-name overrides (the Jotform title is used when a
 // form isn't listed here). Keeps the SUBMITTED DOCUMENTS labels clean.
 const FORM_LABEL_OVERRIDES = {
-  "261608232937056": "Instructor Agreement Contract",
-  "261727467730867": "Instructor Money and Credit Card Policy (Clone)"
+  "261608232937056": "Instructor Agreement Contract"
+  // 261727467730867 uses its real Jotform title ("Instructor First Aid Kit Policy").
 };
 
 // Forms whose PDF is a "PDF document" (Jotform Sign / fill-from-PDF) — these
