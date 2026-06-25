@@ -1512,8 +1512,11 @@
     /* "Save this trip for offline" bar (sits between the tiles and content). */
     .offline-save-bar {
       display: flex;
+      flex-direction: column;
       align-items: center;
-      gap: 12px;
+      justify-content: center;
+      text-align: center;
+      gap: 6px;
       flex-wrap: wrap;
       margin: 4px 24px 0;
     }
@@ -1803,6 +1806,21 @@
   // key contacts, document checklist) with no signal. Throttled because the
   // per-student endpoints scan Jotform server-side.
   const PD_OFFLINE_SAVED_KEY = "pdOfflineSavedAt"; // { [portalId]: ISO }
+  // The real limit on offline access is the 12h session, NOT the data cache:
+  // once the remembered session lapses (PD_REMEMBER_TTL_MS, above) the portal
+  // can't be reopened offline at all — the session gate bounces toward a login
+  // page that needs a network. So we tie the offline window to that same 12h
+  // life. Keep DATA_MAX_AGE_MS in service-worker.js aligned to this so the
+  // cached data and the session expire together.
+  const PD_OFFLINE_TTL_MS = PD_REMEMBER_TTL_MS;
+  const PD_OFFLINE_TTL_HOURS = Math.round(PD_OFFLINE_TTL_MS / (60 * 60 * 1000));
+
+  // Expiry Date for a save made at `iso`, or null if the stamp is unparseable.
+  function pdOfflineExpiry(iso) {
+    const t = new Date(iso).getTime();
+    if (!isFinite(t)) return null;
+    return new Date(t + PD_OFFLINE_TTL_MS);
+  }
 
   function pdOfflineSavedMap() {
     try { return JSON.parse(localStorage.getItem(PD_OFFLINE_SAVED_KEY) || "{}") || {}; }
@@ -1827,7 +1845,17 @@
     bar.hidden = false;
     const pid = String(portalData.hs_object_id || "");
     const saved = pid ? pdOfflineSavedMap()[pid] : null;
-    setOfflineSaveStatus(saved ? `Saved for offline · ${pdFormatStamp(saved)}` : "");
+    if (!saved) {
+      // Not saved yet — tell the user upfront how long a save will last.
+      setOfflineSaveStatus(`Available offline for ${PD_OFFLINE_TTL_HOURS} hours after saving.`);
+      return;
+    }
+    const exp = pdOfflineExpiry(saved);
+    if (exp && exp.getTime() > Date.now()) {
+      setOfflineSaveStatus(`Saved ${pdFormatStamp(saved)} · available offline until ${pdFormatStamp(exp.toISOString())}`);
+    } else {
+      setOfflineSaveStatus("Offline copy expired — tap to save again.");
+    }
   }
 
   // Run an array of () => Promise tasks with limited concurrency.
@@ -1910,8 +1938,10 @@
 
       const iso = new Date().toISOString();
       if (pid) pdSetOfflineSaved(pid, iso);
+      const exp = pdOfflineExpiry(iso);
+      const expText = exp ? ` · available offline until ${pdFormatStamp(exp.toISOString())}` : "";
       setOfflineSaveStatus(
-        (failed ? `Saved with ${failed} item${failed === 1 ? "" : "s"} skipped · ` : "Saved for offline · ") + pdFormatStamp(iso)
+        (failed ? `Saved with ${failed} item${failed === 1 ? "" : "s"} skipped` : "Saved for offline") + expText
       );
     } catch (err) {
       console.error("[offline-save] failed:", err);
