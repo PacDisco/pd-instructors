@@ -1,7 +1,7 @@
 // Bump this string any time you ship a release that should bust the
 // install-time cache for previously-installed PWA users. The activate
 // handler below deletes any cache whose name doesn't match.
-const CACHE_NAME = "pacific-discovery-v40-offline-field";
+const CACHE_NAME = "pacific-discovery-v41-offline-field";
 const STATIC_FILES = ["/index.html", "/login.html", "/site.webmanifest"];
 
 // Separate cache for "field-essential" GET data so a trip leader with no
@@ -19,6 +19,16 @@ const CACHEABLE_DATA = [
 function isCacheableData(url) {
   return CACHEABLE_DATA.some(p => url.includes(p));
 }
+
+// How long a saved offline copy stays usable. Matched to the 12h login session
+// (TOKEN_TTL_MS in _shared/auth.js and PD_REMEMBER_TTL_MS in index.html): once
+// the session lapses the portal can't be reopened offline anyway, so there's no
+// point serving older data. Past this, a cached response is treated as stale
+// and is NOT served offline (it's deleted and the page is told nothing is
+// saved). Any online visit — or tapping "Save this trip for offline" again —
+// re-stamps the copy and resets the clock. Keep in sync with PD_OFFLINE_TTL_MS
+// in index.html.
+const DATA_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12 hours
 
 // Install — cache static files
 self.addEventListener("install", e => {
@@ -64,13 +74,20 @@ async function networkFirstData(request) {
     }
     return res;
   } catch (_) {
-    // Offline / network error — serve the last good copy if we have one.
+    // Offline / network error — serve the last good copy if we have one AND it
+    // hasn't aged past DATA_MAX_AGE_MS. A stale copy is deleted and treated as
+    // "not saved" so the leader is never shown expired trip info.
     const cached = await cache.match(request);
-    if (cached) return cached;
-    // Nothing cached for this request: hand back a clear offline marker the
-    // page can recognise instead of a generic network failure.
+    if (cached) {
+      const stamp = cached.headers.get("X-PD-Cached-At");
+      const age = stamp ? (Date.now() - new Date(stamp).getTime()) : Infinity;
+      if (age <= DATA_MAX_AGE_MS) return cached;
+      try { await cache.delete(request); } catch (_) { /* ignore */ }
+    }
+    // Nothing usable cached for this request: hand back a clear offline marker
+    // the page can recognise instead of a generic network failure.
     return new Response(
-      JSON.stringify({ error: "You're offline and this hasn't been saved for offline use yet.", offline: true }),
+      JSON.stringify({ error: "You're offline and this hasn't been saved for offline use yet (or the saved copy has expired).", offline: true }),
       { status: 503, headers: { "Content-Type": "application/json", "X-PD-Offline": "1" } }
     );
   }
