@@ -1365,6 +1365,10 @@
       font-size: 13px; font-weight: 700; letter-spacing: 0.3px; color: #212121;
     }
     .folder-card-desc { font-size: 12px; color: #666; line-height: 1.4; }
+    /* Top-level numbered documents — open directly, accented to read as a
+       document rather than a (navigable) folder. */
+    .folder-card-doc { text-decoration: none; border-top-color: #e8694a; }
+    .folder-card-doc:hover { background: #fbeae4; }
     .folder-panel { display: none; }
     .folder-panel.active { display: block; }
 
@@ -2069,6 +2073,7 @@
   // netlify/functions/portal.js so the value gets fetched.
   // ============================================================
   const INSTRUCTOR_RESOURCE_LINKS = [
+    { label: "Instructor Handbook",   prop: "instructor_handbook" },
     { label: "Pre-Program Logistics", prop: "pre_program_logistics" },
     { label: "Instructor Itinerary",  prop: "instructor_itinerary" },
     { label: "Provider List",         prop: "provider_list" },
@@ -2241,11 +2246,26 @@
       } else {
         if (foldersSec) foldersSec.style.display = "";
         __instrFolders = folders;
-        __instrSel = 0;
+        // Default the open panel to the first real folder. Top-level numbered
+        // documents (kind === "file") are direct links, not selectable panels;
+        // if the list is all documents, __instrSel stays -1 (no panel).
+        const firstFolderIdx = folders.findIndex(f => f && f.kind !== "file");
+        __instrSel = firstFolderIdx;
         __instrPath = [];
         const cards = folders.map((fld, i) => {
+          // A top-level numbered document — render as a card that opens the
+          // file directly, styled to read as a document rather than a folder.
+          if (fld && fld.kind === "file") {
+            const ext  = (fld.extension || "").toUpperCase();
+            const size = fmtFileSize(fld.size);
+            const meta = [ext, size].filter(Boolean).join(" · ") || "Document";
+            return `<a class="folder-card folder-card-doc" href="${attrEsc(fld.url || "#")}" target="_blank" rel="noopener" data-idx="${i}">
+              <span class="folder-card-title">${attrEsc(fld.name)}</span>
+              <span class="folder-card-desc">${attrEsc(meta)}</span>
+            </a>`;
+          }
           const desc = folderDescription(fld);
-          return `<button type="button" class="folder-card${i === 0 ? " active" : ""}" data-idx="${i}" onclick="selectInstructorFolder(${i})">
+          return `<button type="button" class="folder-card${i === firstFolderIdx ? " active" : ""}" data-idx="${i}" onclick="selectInstructorFolder(${i})">
             <span class="folder-card-title">${attrEsc(fld.name)}</span>
             ${desc ? `<span class="folder-card-desc">${attrEsc(desc)}</span>` : ""}
           </button>`;
@@ -2278,8 +2298,10 @@
   }
 
   function instrCurrentNode() {
+    // __instrSel can be -1 (no folders, only documents) or point at a
+    // top-level document (kind === "file") — neither has a panel.
     let node = __instrFolders[__instrSel];
-    if (!node) return null;
+    if (!node || node.kind === "file") return null;
     for (const i of __instrPath) { node = (node.folders || [])[i]; if (!node) return null; }
     return node;
   }
