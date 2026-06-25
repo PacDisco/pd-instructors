@@ -292,6 +292,7 @@ export async function handler(event) {
       // Instructor Resources tab — DETAILS cards shown above the resource
       // folders (see INSTRUCTOR_RESOURCE_LINKS in index.html). Verify these
       // internal names match HubSpot exactly.
+      "instructor_handbook",
       "pre_program_logistics",
       "instructor_itinerary",
       "provider_list",
