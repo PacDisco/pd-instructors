@@ -31,18 +31,27 @@ function b64urlDecode(s) {
   return Buffer.from(t, "base64").toString("utf8");
 }
 
-export function signDocRef(url) {
+// Sign a doc-ref. `fallback` (optional) is one or more backup URLs the proxy
+// tries in order if the primary fetch fails — e.g. Jotform generatePDF →
+// getSubmissionPDF for Sign submissions. Stored as `f` in the payload.
+export function signDocRef(url, fallback) {
   const secret = process.env.SESSION_SECRET;
   if (!secret || !url) return "";
-  const payload = b64url(JSON.stringify({ u: String(url), e: Date.now() + REF_TTL_MS }));
+  const obj = { u: String(url), e: Date.now() + REF_TTL_MS };
+  const fb = Array.isArray(fallback)
+    ? fallback.filter(Boolean).map(String)
+    : (fallback ? [String(fallback)] : []);
+  if (fb.length) obj.f = fb;
+  const payload = b64url(JSON.stringify(obj));
   const sig = crypto.createHmac("sha256", secret).update(payload).digest("hex");
   return `${payload}.${sig}`;
 }
 
 // Full proxy URL the browser uses. Empty string if it can't be signed (caller
-// should then omit the link rather than fall back to a raw URL).
-export function proxyRef(url) {
-  const t = signDocRef(url);
+// should then omit the link rather than fall back to a raw URL). `fallback` is
+// an optional backup URL (or array) the proxy tries if the primary fails.
+export function proxyRef(url, fallback) {
+  const t = signDocRef(url, fallback);
   return t ? `/document-proxy?ref=${encodeURIComponent(t)}` : "";
 }
 
