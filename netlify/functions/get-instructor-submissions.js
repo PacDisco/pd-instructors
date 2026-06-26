@@ -53,16 +53,21 @@ const FORM_LABEL_OVERRIDES = {
   // 261727467730867 uses its real Jotform title ("Instructor First Aid Kit Policy").
 };
 
-// Forms whose PDF is a "PDF document" (Jotform Sign / fill-from-PDF) — these
-// render via the pdf-converter/fill-pdf endpoint instead of generatePDF, which
-// returns the actual signed MASTER document rather than a data dump.
+// Forms whose PDF should be fetched via the pdf-converter/fill-pdf endpoint
+// (forms with a genuine fillable-PDF document attached). Empty by default:
+// generatePDF is the universal endpoint and works for regular forms AND for
+// Sign-enabled forms (it renders the submission with the signature). The
+// fill-pdf endpoint 400s ("draw-pdf-answers Request Failed") on Sign
+// Automation forms that have no fillable-PDF document, so we don't use it
+// unless a form is explicitly opted in via INSTRUCTOR_FILL_PDF_FORM_IDS.
 const FILL_PDF_FORM_IDS = new Set(
-  (process.env.INSTRUCTOR_FILL_PDF_FORM_IDS || "261608232937056")
+  (process.env.INSTRUCTOR_FILL_PDF_FORM_IDS || "")
     .split(",").map(s => s.trim()).filter(Boolean)
 );
 
-// Build the (unsigned-by-us, key-injected-by-proxy) Jotform PDF URL for a
-// submission. Sign documents use fill-pdf; regular forms use generatePDF.
+// Build the primary (unsigned-by-us, key-injected-by-proxy) Jotform PDF URL
+// for a submission. Forms opted into FILL_PDF use fill-pdf; everything else
+// uses generatePDF.
 function pdfApiUrl(base, formId, sid) {
   if (FILL_PDF_FORM_IDS.has(String(formId))) {
     return `${base}/pdf-converter/${encodeURIComponent(formId)}/fill-pdf` +
@@ -70,6 +75,18 @@ function pdfApiUrl(base, formId, sid) {
   }
   return `${base}/generatePDF?formID=${encodeURIComponent(formId)}` +
     `&submissionID=${encodeURIComponent(sid)}&download=1`;
+}
+
+// Fallback PDF URL — the legacy getSubmissionPDF endpoint on the www host. The
+// /document-proxy tries this if the primary endpoint fails (e.g. a Sign
+// submission that 400s on generatePDF/fill-pdf).
+function pdfFallbackUrl(base, formId, sid) {
+  const www = base
+    .replace("//api.", "//www.")
+    .replace("//eu-api.", "//eu.")
+    .replace("//hipaa-api.", "//hipaa.");
+  return `${www}/server.php?action=getSubmissionPDF` +
+    `&sid=${encodeURIComponent(sid)}&formID=${encodeURIComponent(formId)}`;
 }
 
 // Forms whose submissions carry uploaded files we surface individually.
@@ -136,8 +153,10 @@ async function loadPdfFormDocs(formId, email, apiKey, base) {
       if (!sid) continue;
       // PDF render of the submission via the Jotform API. We sign the URL
       // WITHOUT the api key — the /document-proxy edge function injects it
-      // (and the submission id stays hidden inside the signed ref).
-      const url = proxyRef(pdfApiUrl(base, formId, sid));
+      // (and the submission id stays hidden inside the signed ref). A
+      // getSubmissionPDF fallback is registered so a failed primary endpoint
+      // (e.g. a Sign submission) auto-retries before erroring.
+      const url = proxyRef(pdfApiUrl(base, formId, sid), pdfFallbackUrl(base, formId, sid));
       if (!url) continue;
       out.push({
         formId,
