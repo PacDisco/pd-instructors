@@ -1619,7 +1619,7 @@
     SAVE THIS TRIP FOR OFFLINE
   </button>
   <span id="offlineSaveStatus" class="offline-save-status"></span>
-  <span class="offline-save-note">Saved trips are available offline for 12 hours from when you save.</span>
+  <span class="offline-save-note">Saved trips are available offline for 7 days from when you save.</span>
 </div>
 
 <div id="content">Loading...</div>
@@ -1688,6 +1688,14 @@
             if (!h.has("Authorization")) h.set("Authorization", "Bearer " + t);
             init = Object.assign({}, init, { headers: h });
           }
+          // Remember the exact read (GET) URLs the app fetches this session so
+          // "Save this trip for offline" can re-warm precisely what was viewed
+          // (teachers, fast-facts, reports, instructor resources, …), matching
+          // the service worker's cache keys.
+          try {
+            var m = (init && init.method ? String(init.method) : "GET").toUpperCase();
+            if (m === "GET") (window.__pdFetched = window.__pdFetched || new Set()).add(u);
+          } catch (e2) {}
         }
       } catch (e) {}
       return _f.call(this, input, init).then(function(res){
@@ -1726,10 +1734,13 @@
   // a live session into localStorage so that if the app is reopened OFFLINE we
   // can restore it and render the last-cached field data (read-only) instead
   // of bouncing to a login page that can't work without a network. The
-  // remembered copy is expiry-bounded to match the 12h token life and is
-  // cleared on logout and on any 401.
+  // remembered copy is expiry-bounded to the 7-day offline window (matching
+  // DATA_MAX_AGE_MS in the service worker) so the app can be reopened offline
+  // in the field for up to a week. It's cleared on logout and on any 401. NOTE:
+  // this only governs OFFLINE reopen — the 12h server token still gates all
+  // online access, so a re-login is still required once online after 12h.
   const PD_REMEMBER_KEY = "pdRememberedSession";
-  const PD_REMEMBER_TTL_MS = 12 * 60 * 60 * 1000;
+  const PD_REMEMBER_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
   function pdRememberSession() {
     try {
@@ -1927,6 +1938,17 @@
         ], 2);
         failed += r.failed;
       }
+
+      // 4. Warm anything else the instructor has already viewed this session
+      //    (key contacts, fast facts, program reports, instructor resources,
+      //    uploaded documents, …) so those tabs also render offline.
+      try {
+        const seen = Array.from(window.__pdFetched || []);
+        if (seen.length) {
+          const r2 = await pdRunPool(seen.map(u => () => pdWarm(u)), 3);
+          failed += r2.failed;
+        }
+      } catch (_) {}
 
       const iso = new Date().toISOString();
       if (pid) pdSetOfflineSaved(pid, iso);

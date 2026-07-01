@@ -1,7 +1,7 @@
 // Bump this string any time you ship a release that should bust the
 // install-time cache for previously-installed PWA users. The activate
 // handler below deletes any cache whose name doesn't match.
-const CACHE_NAME = "pacific-discovery-v41-offline-field";
+const CACHE_NAME = "pacific-discovery-v42-offline-7day";
 const STATIC_FILES = ["/index.html", "/login.html", "/site.webmanifest"];
 
 // Separate cache for "field-essential" GET data so a trip leader with no
@@ -9,26 +9,42 @@ const STATIC_FILES = ["/index.html", "/login.html", "/site.webmanifest"];
 // from the static cache so the activate-time cleanup doesn't wipe it on every
 // release. Populated + served by networkFirstData() below.
 const DATA_CACHE = "pd-field-data-v1";
+
+// All read-only GET data endpoints the instructor portal uses. Anything the
+// instructor views while online is saved here and replayed offline, so the
+// whole portal — not just the core essentials — is usable in the field.
+// Writes (login, checkout, push subscribe, update-application) are NOT listed
+// and always stay strictly online-only. Keep in sync with the client.
 const CACHEABLE_DATA = [
-  "/.netlify/functions/portal",                 // core trip data + key contacts
-  "/.netlify/functions/get-students",           // student list
-  "/.netlify/functions/get-application-data",   // per-student medical / application
-  "/.netlify/functions/get-document-checklist", // per-student document checklist
-  "/.netlify/functions/get-insurance"           // global config (doc form, faqs)
+  "/.netlify/functions/portal",                  // core trip data + key contacts
+  "/.netlify/functions/get-students",            // student list
+  "/.netlify/functions/get-application-data",    // per-student medical / application
+  "/.netlify/functions/get-document-checklist",  // per-student document checklist
+  "/.netlify/functions/get-insurance",           // global config (doc form, faqs)
+  "/.netlify/functions/get-teachers",            // instructors / key contacts
+  "/.netlify/functions/get-fast-facts",          // fast-facts cards
+  "/.netlify/functions/get-program-reports",     // program reports
+  "/.netlify/functions/get-instructor-documents",// instructor resource docs
+  "/.netlify/functions/get-instructor-files",    // instructor files
+  "/.netlify/functions/get-instructor-submissions",// instructor submissions
+  "/.netlify/functions/get-uploaded-documents",  // uploaded document links
+  "/.netlify/functions/get-push-config"          // push config
 ];
 function isCacheableData(url) {
   return CACHEABLE_DATA.some(p => url.includes(p));
 }
 
-// How long a saved offline copy stays usable. Matched to the 12h login session
-// (TOKEN_TTL_MS in _shared/auth.js and PD_REMEMBER_TTL_MS in index.html): once
-// the session lapses the portal can't be reopened offline anyway, so there's no
-// point serving older data. Past this, a cached response is treated as stale
-// and is NOT served offline (it's deleted and the page is told nothing is
-// saved). Any online visit — or tapping "Save this trip for offline" again —
-// re-stamps the copy and resets the clock. Keep in sync with PD_OFFLINE_TTL_MS
-// in index.html.
-const DATA_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12 hours
+// How long a saved offline copy stays usable. Decoupled from the 12h login
+// token on purpose: offline, the server never verifies the token anyway (there
+// is no network), so the token's lifetime only governs ONLINE access. This lets
+// an instructor take the portal into the field for up to 7 days with no signal.
+// The 12h token in _shared/auth.js is UNCHANGED — when back online with an
+// expired token the app still forces a fresh login. Past this window a cached
+// response is treated as stale, deleted, and the page is told nothing is saved.
+// Any online visit — or tapping "Save this trip for offline" again — re-stamps
+// the copy and resets the clock. Keep in sync with PD_REMEMBER_TTL_MS in
+// index.html.
+const DATA_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 // Install — cache static files
 self.addEventListener("install", e => {
