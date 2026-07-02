@@ -19,7 +19,23 @@
 
 import crypto from "crypto";
 
-const REF_TTL_MS = 1000 * 60 * 60 * 24; // 24h — refs are regenerated each page load
+// Refs are DETERMINISTIC within a 7-day window: signDocRef rounds the expiry up
+// to the next 7-day boundary, so the same file URL produces the byte-identical
+// signed ref on every page load for the life of that window. This is what makes
+// documents work offline in the PWA — the app caches a file under its
+// /document-proxy?ref=… URL, and the link the page renders later (online OR
+// offline, on the same or a later load) resolves to that same URL, so the
+// cached copy is found. Matches the 7-day offline data window (DATA_MAX_AGE_MS
+// in public/service-worker.js). Trade-off vs. the old rotating 24h ref: a
+// leaked proxy link can stay valid up to 7 days — but it still only encodes a
+// file URL, never the submission ID.
+const REF_WINDOW_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
+
+// Expiry rounded up to the next 7-day boundary → identical for every ref minted
+// for the same URL within that window (deterministic, cache-stable).
+function bucketedExpiry() {
+  return Math.ceil(Date.now() / REF_WINDOW_MS) * REF_WINDOW_MS;
+}
 
 function b64url(s) {
   return Buffer.from(s, "utf8").toString("base64")
@@ -37,7 +53,7 @@ function b64urlDecode(s) {
 export function signDocRef(url, fallback) {
   const secret = process.env.SESSION_SECRET;
   if (!secret || !url) return "";
-  const obj = { u: String(url), e: Date.now() + REF_TTL_MS };
+  const obj = { u: String(url), e: bucketedExpiry() };
   const fb = Array.isArray(fallback)
     ? fallback.filter(Boolean).map(String)
     : (fallback ? [String(fallback)] : []);

@@ -1,7 +1,7 @@
 // Bump this string any time you ship a release that should bust the
 // install-time cache for previously-installed PWA users. The activate
 // handler below deletes any cache whose name doesn't match.
-const CACHE_NAME = "pacific-discovery-v42-offline-7day";
+const CACHE_NAME = "pacific-discovery-v43-offline-docs";
 const STATIC_FILES = ["/index.html", "/login.html", "/site.webmanifest"];
 
 // Separate cache for "field-essential" GET data so a trip leader with no
@@ -115,13 +115,19 @@ self.addEventListener("fetch", e => {
 
   // API calls.
   if (url.includes("/.netlify/functions/") || url.includes("/document-proxy")) {
-    // Field-essential GET data: network-first with an offline cache fallback.
-    if (e.request.method === "GET" && isCacheableData(url)) {
+    // Field-essential GET data AND streamed documents (/document-proxy):
+    // network-first with an offline cache fallback. Document links are signed
+    // with a deterministic 7-day ref (see _shared/docref.js), so a file cached
+    // now is found again under the same URL when the page re-renders the link
+    // offline. Files can be several MB — they share the 7-day DATA_CACHE and
+    // are wiped alongside it on logout / forced sign-out.
+    const isDoc = url.includes("/document-proxy");
+    if (e.request.method === "GET" && (isCacheableData(url) || isDoc)) {
       e.respondWith(networkFirstData(e.request));
       return;
     }
-    // Everything else (logins, mutations, checkout, document streams) stays
-    // strictly online-only — never served from cache.
+    // Everything else (logins, mutations, checkout) stays strictly online-only
+    // — never served from cache.
     e.respondWith(fetch(e.request));
     return;
   }

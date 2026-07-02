@@ -1828,6 +1828,26 @@
   window.addEventListener("online", () => pdHideOfflineBanner());
   if (!navigator.onLine) pdShowOfflineBanner();
 
+  // When offline, links that point at an external site (Google Drive manuals,
+  // itineraries, gear lists, insurance overviews, flight-ticket folders) can't
+  // be opened — they're not ours to cache. Intercept those taps and explain,
+  // instead of opening a blank/broken tab. Same-origin /document-proxy files
+  // (which we DO cache) and in-app links are left alone.
+  document.addEventListener("click", (ev) => {
+    if (navigator.onLine) return;
+    const a = ev.target && ev.target.closest && ev.target.closest("a[href]");
+    if (!a) return;
+    const href = a.getAttribute("href") || "";
+    if (!href || href.startsWith("#") || href.startsWith("/document-proxy")) return;
+    let external = false;
+    try { external = new URL(href, location.href).origin !== location.origin; }
+    catch (_) { external = false; }
+    if (external) {
+      ev.preventDefault();
+      alert("This document is hosted on an external site (e.g. Google Drive) and needs an internet connection to open. Reconnect to view it.");
+    }
+  }, true);
+
   // ----- "Save this trip for offline" -------------------------------------
   // Proactively warms the service worker's field-data cache so a leader can
   // read the trip's essentials (student list, each student's medical info,
@@ -1916,39 +1936,71 @@
         } catch (_) {}
       }
 
-      // 3. Per-student medical + document checklist, throttled.
+      // Collect every /document-proxy?ref=… link found in the JSON we cache, so
+      // the actual files can be downloaded for offline viewing. Refs are
+      // deterministic for 7 days (see _shared/docref.js), so these match the
+      // links the page renders offline.
+      const docUrls = new Set();
+      const DOC_RE = /\/document-proxy\?ref=[A-Za-z0-9\-_.%]+/g;
+      const collectDocs = (text) => {
+        if (!text) return;
+        let m; while ((m = DOC_RE.exec(text))) docUrls.add(m[0]);
+      };
+      // Fetch a JSON endpoint, cache it (via the SW) AND scan it for doc links.
+      const warmAndScan = async (u) => {
+        const res = await fetch(u);
+        const text = await res.text().catch(() => "");
+        if (res && res.headers && res.headers.get("X-PD-Offline")) throw new Error("offline");
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        collectDocs(text);
+      };
+
+      // Portrait photos come back on the student list we already fetched.
+      try { collectDocs(JSON.stringify(students)); } catch (_) {}
+
+      // Resolve the document-upload form id(s) once so we can pull each
+      // student's uploaded documents.
+      let docFormIds = "";
+      try { docFormIds = (await resolveDocumentFormIds()) || ""; } catch (_) {}
+
+      // 3. Per-student medical + checklist + uploaded documents, throttled.
       const withEmail = students.filter(s => s && s.email);
-      if (withEmail.length) {
-        const tasks = [];
-        for (const s of withEmail) {
-          const em = encodeURIComponent(s.email);
-          tasks.push(() => pdWarm(`/.netlify/functions/get-application-data?email=${em}`));
-          tasks.push(() => pdWarm(`/.netlify/functions/get-document-checklist?email=${em}`));
+      const roster = withEmail.length ? withEmail : [{ email }];
+      const tasks = [];
+      for (const s of roster) {
+        const em = encodeURIComponent(s.email || email);
+        tasks.push(() => warmAndScan(`/.netlify/functions/get-application-data?email=${em}`));
+        tasks.push(() => pdWarm(`/.netlify/functions/get-document-checklist?email=${em}`));
+        if (docFormIds) {
+          tasks.push(() => warmAndScan(`/.netlify/functions/get-uploaded-documents?email=${em}&formIds=${encodeURIComponent(docFormIds)}`));
         }
+      }
+      {
         const r = await pdRunPool(tasks, 3, (done) => {
-          setOfflineSaveStatus(`Saving… ${Math.min(withEmail.length, Math.ceil(done / 2))}/${withEmail.length} students`);
+          setOfflineSaveStatus(`Saving trip data… ${done}/${tasks.length}`);
         });
-        failed += r.failed;
-      } else {
-        // Regular student: cache just their own medical + checklist.
-        const em = encodeURIComponent(email);
-        const r = await pdRunPool([
-          () => pdWarm(`/.netlify/functions/get-application-data?email=${em}`),
-          () => pdWarm(`/.netlify/functions/get-document-checklist?email=${em}`)
-        ], 2);
         failed += r.failed;
       }
 
-      // 4. Warm anything else the instructor has already viewed this session
-      //    (key contacts, fast facts, program reports, instructor resources,
-      //    uploaded documents, …) so those tabs also render offline.
+      // Instructor PI-folder submissions (policy PDFs + uploads), if any.
+      try { await warmAndScan(`/.netlify/functions/get-instructor-submissions`); } catch (_) {}
+
+      // 4. Warm anything else viewed this session (key contacts, fast facts,
+      //    program reports, instructor resources, …) and scan those for docs.
       try {
-        const seen = Array.from(window.__pdFetched || []);
-        if (seen.length) {
-          const r2 = await pdRunPool(seen.map(u => () => pdWarm(u)), 3);
-          failed += r2.failed;
+        for (const u of Array.from(window.__pdFetched || [])) {
+          try { await warmAndScan(u); } catch (_) { /* non-JSON or offline — skip */ }
         }
       } catch (_) {}
+
+      // 5. Download the actual document FILES so they open with no signal.
+      const docs = Array.from(docUrls);
+      if (docs.length) {
+        const rd = await pdRunPool(docs.map(u => () => pdWarm(u)), 3, (done) => {
+          setOfflineSaveStatus(`Saving documents… ${done}/${docs.length}`);
+        });
+        failed += rd.failed;
+      }
 
       const iso = new Date().toISOString();
       if (pid) pdSetOfflineSaved(pid, iso);
