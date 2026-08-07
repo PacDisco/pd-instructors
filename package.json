@@ -10,5 +10,8 @@
   "dependencies": {
     "nodemailer": "^6.9.16",
     "web-push": "^3.6.7"
+  },
+  "scripts": {
+    "test": "node test/instructor-checklist.test.mjs"
   }
 }

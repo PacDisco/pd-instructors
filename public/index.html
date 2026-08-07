@@ -2356,6 +2356,16 @@
       return;
     }
 
+    // `degraded` means the server couldn't read the property's option list, so
+    // it does NOT know the full set of required documents. Never render a
+    // completeness summary in that case — an empty `outstanding` here would
+    // otherwise print a green "All documents uploaded." that is simply false.
+    if (data?.degraded) {
+      console.warn("[loadInstructorDocChecklist] degraded:", data?.warning || "unknown reason");
+      container.innerHTML = `<div class="doc-checklist-empty">Couldn't load the document checklist right now.</div>`;
+      return;
+    }
+
     const options     = Array.isArray(data?.options)     ? data.options     : [];
     const uploaded    = Array.isArray(data?.uploaded)    ? data.uploaded    : [];
     const outstanding = Array.isArray(data?.outstanding) ? data.outstanding : [];

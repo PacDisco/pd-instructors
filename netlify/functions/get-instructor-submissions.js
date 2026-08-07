@@ -31,6 +31,18 @@
 
 import { authenticate, authError } from "./_shared/auth.js";
 import { proxyRef } from "./_shared/docref.js";
+// Shared with the document checklist so the two agree on "whose submission is
+// this?". Several PI-folder forms carry more than one email field (the Personal
+// Information form has a Next-of-Kin email) — matching on any of them would
+// serve one instructor's submission PDF to whoever they listed as next of kin.
+//
+// The two endpoints are still not identical by design: the checklist also
+// matches a contact's HubSpot secondary emails (hs_additional_emails), which
+// this endpoint has no HubSpot lookup for. So an instructor who submits Jotform
+// from a different address than their contact record can see a ticked checklist
+// item with no matching PDF listed here. The fix for that is to correct the
+// address in HubSpot or Jotform, not to loosen matching here.
+import { submitterEmail } from "./_shared/instructor-checklist.js";
 
 // Policy / info / contract forms whose submission is rendered as a PDF.
 //   261748248196873  Instructor Personal Information
@@ -245,7 +257,10 @@ async function fetchSubmissions(formId, apiKey, base) {
     offset += 1000;
     if (offset >= 5000) break;
   }
-  return list;
+  // Jotform keeps deleted submissions addressable with status DELETED. Listing
+  // one here would render a card whose PDF link 404s — and would disagree with
+  // the document checklist, which filters them out.
+  return list.filter(s => String(s?.status || "ACTIVE").toUpperCase() === "ACTIVE");
 }
 
 async function fetchFormTitle(formId, apiKey, base) {
@@ -262,15 +277,10 @@ async function fetchFormTitle(formId, apiKey, base) {
   }
 }
 
+// The submitter's own email — first email field in display order, ignoring any
+// field labelled as a third party's (next of kin, emergency contact, …).
 function submissionEmail(submission) {
-  const answers = submission?.answers || {};
-  for (const k of Object.keys(answers)) {
-    const a = answers[k];
-    if (a && String(a.type || "").toLowerCase() === "control_email" && a.answer) {
-      return String(a.answer).toLowerCase().trim();
-    }
-  }
-  return null;
+  return submitterEmail(submission);
 }
 
 function isGenericUploadLabel(label) {
