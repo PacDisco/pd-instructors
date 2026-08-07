@@ -35,3 +35,8 @@ Set on this site:
 `HUBSPOT_API_KEY` stays for the mirror. Remove it — or set
 `INSTRUCTOR_CHECKLIST_SYNC=off` — when you're ready to drop HubSpot; the
 checklist keeps working, and there's a test covering that end state.
+
+## Unchanged since the last bundle
+
+Nothing in this repo changed while the dashboard document work was done. If you
+already applied the previous portal bundle, you can skip this one.
