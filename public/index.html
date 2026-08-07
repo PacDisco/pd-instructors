@@ -1602,7 +1602,7 @@
     PHOTO ALBUM
   </div>
 
-  <div id="bookFlightsTile" class="tile" onclick="window.open('https://pages.pacificdiscovery.org/instructor-flights','_blank','noopener')">
+  <div id="bookFlightsTile" class="tile" onclick="window.open('https://pages.pacificdiscovery.org/instructor-flights?email=' + encodeURIComponent(sessionStorage.getItem('portalEmail') || ''), '_blank', 'noopener')">
     BOOK FLIGHTS
   </div>
 
