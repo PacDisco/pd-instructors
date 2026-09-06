@@ -2285,6 +2285,17 @@
     { label: "Instructor Budget",     prop: "instructor_budget" }
   ];
 
+  // Instructor Resources tab — three optional "name + link" pairs the school
+  // fills in on the Program record (Instructor Field 1/2/3 Name + Link).
+  // Unlike INSTRUCTOR_RESOURCE_LINKS above (fixed label, one URL each), these
+  // carry their own button label, so a pair only renders when BOTH halves
+  // have a value. They append to the end of the KEY DOCUMENTS grid in order.
+  const INSTRUCTOR_CUSTOM_LINKS = [
+    { nameProp: "instructor_field_1_name", linkProp: "instructor_field_1_link" },
+    { nameProp: "instructor_field_2_name", linkProp: "instructor_field_2_link" },
+    { nameProp: "instructor_field_3_name", linkProp: "instructor_field_3_link" }
+  ];
+
   // Live-loads the Pacific Discovery Instructor Resources HubSpot Files
   // folder and renders its contents into #instructorFilesContainer (the
   // placeholder block injected at the top of the Instructor Resources
@@ -2653,21 +2664,38 @@
   // Teacher tabs. Hides any field whose URL is blank on both the trip
   // record and the global record. Returns an empty string when nothing
   // is configured so we don't draw an empty section.
-  function renderResourceLinkGrid(fields) {
+  // One DETAILS card. Shared by the fixed-label resource links and the
+  // custom name/link pairs so both render identically in the grid.
+  function resourceLinkCard(label, url) {
+    return `
+          <div class="tl-link-card">
+            <div class="tl-link-title">${attrEsc(String(label).toUpperCase())}</div>
+            <a href="${attrEsc(url)}" target="_blank" rel="noopener" class="tl-link-btn">DETAILS</a>
+          </div>
+        `;
+  }
+
+  // `fields` are fixed-label properties ({ label, prop }) — the label is
+  // hardcoded here and only the URL comes from HubSpot.
+  // `pairs` (optional) are property pairs ({ nameProp, linkProp }) where the
+  // button label comes from HubSpot too. Pair cards append after the fixed
+  // ones, in the order given.
+  function renderResourceLinkGrid(fields, pairs) {
     const cards = (fields || [])
       .filter(f => {
         const v = portalData[f.prop];
         return v && String(v).trim();
       })
-      .map(f => {
-        const url = String(portalData[f.prop]).trim();
-        return `
-          <div class="tl-link-card">
-            <div class="tl-link-title">${f.label.toUpperCase()}</div>
-            <a href="${url}" target="_blank" rel="noopener" class="tl-link-btn">DETAILS</a>
-          </div>
-        `;
-      });
+      .map(f => resourceLinkCard(f.label, String(portalData[f.prop]).trim()));
+
+    // Both halves must be filled in: a link with no name has no button text,
+    // and a name with no link has nowhere to go — so skip either case rather
+    // than rendering a broken card.
+    (pairs || []).forEach(p => {
+      const label = String(portalData[p.nameProp] || "").trim();
+      const url   = String(portalData[p.linkProp] || "").trim();
+      if (label && url) cards.push(resourceLinkCard(label, url));
+    });
 
     if (cards.length === 0) return "";
     return `<div class="tl-link-grid">${cards.join("")}</div>`;
@@ -3544,7 +3572,7 @@
         // DETAILS cards for the INSTRUCTOR_RESOURCE_LINKS HubSpot properties.
         // Rendered in its own section directly above RESOURCE FOLDERS; the
         // whole section is omitted if none of the properties have a value.
-        const instrResourceGrid = renderResourceLinkGrid(INSTRUCTOR_RESOURCE_LINKS);
+        const instrResourceGrid = renderResourceLinkGrid(INSTRUCTOR_RESOURCE_LINKS, INSTRUCTOR_CUSTOM_LINKS);
         const instrResourceSection = instrResourceGrid
           ? `<div class="docs-section">
             <div class="docs-section-label sec-accent" style="--accent:#3B5998;">KEY DOCUMENTS</div>
