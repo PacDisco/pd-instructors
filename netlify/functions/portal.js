@@ -297,7 +297,13 @@ export async function handler(event) {
       "pre_program_logistics",
       "instructor_itinerary",
       "provider_list",
-      "instructor_budget"
+      "instructor_budget",
+      // Instructor Resources tab — three optional custom name/link pairs
+      // (see INSTRUCTOR_CUSTOM_LINKS in index.html). The Name property holds
+      // the button text, the Link property holds the URL it opens.
+      "instructor_field_1_name", "instructor_field_1_link",
+      "instructor_field_2_name", "instructor_field_2_link",
+      "instructor_field_3_name", "instructor_field_3_link"
     ].join(",");
 
     const tripPortalUrl   = `https://api.hubapi.com/crm/v3/objects/${OBJECT}/${portalId}?properties=${PORTAL_PROPERTIES}`;
