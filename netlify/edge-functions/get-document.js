@@ -12,11 +12,24 @@
 //   url — the full Jotform file URL returned by /form/{id}/submissions
 //
 // Required env var (Netlify): JOTFORM_API_KEY
+// Optional env var (Netlify): DOCUMENT_PROXY_TIMEOUT_MS  default 15000
 //
 // Frontend integration:
 //   Build URLs like `/document-proxy?url=<encoded jotform URL>` from
 //   get-students.js (portrait photos) and get-uploaded-documents.js
 //   (document uploads). Both have been updated.
+
+// Jotform's generatePDF/fill-pdf endpoints render on demand and can be slow
+// (or, under load, effectively hang) — especially over the flaky/high-latency
+// connections a trip leader is often on. Without a timeout here, a slow
+// upstream just burns the edge function's whole execution budget until
+// Netlify's platform kills it, which surfaces as a raw "This edge function has
+// crashed" page instead of a normal HTTP error the app (and the service
+// worker's offline-cache fallback) can react to. Time out well under that
+// platform limit so we always return a clean, ordinary response.
+const UPSTREAM_TIMEOUT_MS = Number(Netlify?.env?.get?.("DOCUMENT_PROXY_TIMEOUT_MS")) > 0
+  ? Number(Netlify.env.get("DOCUMENT_PROXY_TIMEOUT_MS"))
+  : 15000;
 
 export default async (request, context) => {
   const url = new URL(request.url);
@@ -112,11 +125,26 @@ async function attemptUpstream(target) {
   }
 
   let upstream;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), UPSTREAM_TIMEOUT_MS);
   try {
-    upstream = await fetch(parsed.toString(), { redirect: "follow" });
+    upstream = await fetch(parsed.toString(), { redirect: "follow", signal: ctrl.signal });
   } catch (err) {
-    console.error(`[document-proxy] fetch threw for ${parsed.host}${parsed.pathname}:`, err?.message || err);
-    return { ok: false, status: 502, body: { error: "Upstream fetch failed", details: String(err?.message || err) } };
+    const timedOut = err && (err.name === "AbortError");
+    console.error(
+      `[document-proxy] ${timedOut ? "timed out after " + UPSTREAM_TIMEOUT_MS + "ms" : "fetch threw"} for ${parsed.host}${parsed.pathname}:`,
+      err?.message || err
+    );
+    return {
+      ok: false,
+      status: 504,
+      body: {
+        error: timedOut ? "Upstream timed out" : "Upstream fetch failed",
+        details: String(err?.message || err)
+      }
+    };
+  } finally {
+    clearTimeout(timer);
   }
 
   if (!upstream.ok) {

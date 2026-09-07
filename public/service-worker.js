@@ -70,6 +70,20 @@ self.addEventListener("activate", e => {
 // copy on success, and fall back to the last good copy when offline. The
 // stamp (X-PD-Cached-At header) lets the page tell a fresh response from a
 // cached one and show "last updated …" in the offline banner.
+// Look up a still-fresh cached copy of `request` (within DATA_MAX_AGE_MS). A
+// copy that's aged past the window is deleted and treated as absent, so the
+// leader is never silently shown expired trip info. Returns the cached
+// Response, or null if there's nothing usable.
+async function freshCachedCopy(cache, request) {
+  const cached = await cache.match(request);
+  if (!cached) return null;
+  const stamp = cached.headers.get("X-PD-Cached-At");
+  const age = stamp ? (Date.now() - new Date(stamp).getTime()) : Infinity;
+  if (age <= DATA_MAX_AGE_MS) return cached;
+  try { await cache.delete(request); } catch (_) { /* ignore */ }
+  return null;
+}
+
 async function networkFirstData(request) {
   const cache = await caches.open(DATA_CACHE);
   try {
@@ -87,19 +101,23 @@ async function networkFirstData(request) {
       } catch (err) {
         console.warn("[sw] data cache.put skipped:", err && err.message);
       }
+      return res;
+    }
+    // The request reached the network and came back, but broken (a 5xx —
+    // including a crashed/timed-out edge function, which completes as an
+    // ordinary bad response rather than throwing). This is common on flaky
+    // mobile data even while "online", so prefer a known-good saved copy over
+    // showing the raw error, exactly as we would if the fetch had failed
+    // outright below.
+    if (res && res.status >= 500) {
+      const cached = await freshCachedCopy(cache, request);
+      if (cached) return cached;
     }
     return res;
   } catch (_) {
-    // Offline / network error — serve the last good copy if we have one AND it
-    // hasn't aged past DATA_MAX_AGE_MS. A stale copy is deleted and treated as
-    // "not saved" so the leader is never shown expired trip info.
-    const cached = await cache.match(request);
-    if (cached) {
-      const stamp = cached.headers.get("X-PD-Cached-At");
-      const age = stamp ? (Date.now() - new Date(stamp).getTime()) : Infinity;
-      if (age <= DATA_MAX_AGE_MS) return cached;
-      try { await cache.delete(request); } catch (_) { /* ignore */ }
-    }
+    // Offline / network error — serve the last good copy if we have one.
+    const cached = await freshCachedCopy(cache, request);
+    if (cached) return cached;
     // Nothing usable cached for this request: hand back a clear offline marker
     // the page can recognise instead of a generic network failure.
     return new Response(
