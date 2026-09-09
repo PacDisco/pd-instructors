@@ -2238,6 +2238,9 @@
       container.innerHTML = `<div class="doc-checklist-empty">Couldn't load your submitted documents right now.</div>`;
       return;
     }
+    // The instructor may have moved to another tab while this was in
+    // flight — the placeholder is gone, so there is nothing to fill.
+    if (!container.isConnected) return;
     const docs = Array.isArray(data?.documents) ? data.documents : [];
     if (docs.length === 0) {
       container.innerHTML = `<div class="doc-checklist-empty">You haven't submitted any documents yet. Use the forms below to get started.</div>`;
@@ -2367,6 +2370,9 @@
       return;
     }
 
+    // Tab switched while the request was in flight — placeholder is gone.
+    if (!container.isConnected) return;
+
     // `degraded` means the server couldn't read the property's option list, so
     // it does NOT know the full set of required documents. Never render a
     // completeness summary in that case — an empty `outstanding` here would
@@ -2450,6 +2456,9 @@
       hideFolders();
       return;
     }
+
+    // Tab switched while the request was in flight — placeholders are gone.
+    if (!(el && el.isConnected) && !(foldersEl && foldersEl.isConnected)) return;
 
     if (data?.error) {
       if (el) el.innerHTML = `<div class="manuals-empty">Could not load files: ${attrEsc(data.error)}${
@@ -2624,6 +2633,9 @@
       el.innerHTML = `<div class="manuals-empty">Could not load reports. Please refresh in a minute.</div>`;
       return;
     }
+
+    // Tab switched while the request was in flight — placeholder is gone.
+    if (!el.isConnected) return;
 
     if (data?.error) {
       el.innerHTML = `<div class="manuals-empty">Could not load reports: ${attrEsc(data.error)}</div>`;
@@ -3458,13 +3470,55 @@
       : `<span class="tbc">TBC</span>`;
   }
 
+  // ─── Section render guard ────────────────────────────────────────────────
+  // Tabs render in two phases: a synchronous innerHTML write, then async
+  // fetches that append cards (school contacts, student list, ...). Without
+  // a guard, tapping tiles faster than those fetches resolve let a PREVIOUS
+  // tab's late response append its cards on top of whatever is now on
+  // screen — the "double cards" instructors were seeing. It also meant the
+  // 100ms fade timer could stack, so two renders ran for one tab.
+  //
+  // Fix: every loadSection() call takes a new token and cancels the pending
+  // fade timer. Any async work still holding an older token must not touch
+  // the DOM, and its in-flight fetches are aborted so slow mobile
+  // connections aren't finishing work nobody will see.
+  let sectionToken = 0;
+  let sectionTimer = null;
+  let sectionAbort = null;
+
+  function beginSectionRender() {
+    if (sectionTimer) { clearTimeout(sectionTimer); sectionTimer = null; }
+    // Cancel the outgoing tab's requests. Guarded because abort() on an
+    // already-aborted controller (or a browser without AbortController)
+    // shouldn't break navigation.
+    if (sectionAbort) { try { sectionAbort.abort(); } catch (_) {} }
+    sectionAbort = (typeof AbortController === "function") ? new AbortController() : null;
+    const token = ++sectionToken;
+    const signal = sectionAbort ? sectionAbort.signal : undefined;
+    return {
+      token,
+      signal,
+      isStale: () => token !== sectionToken
+    };
+  }
+
+  // True for the error a fetch throws when we aborted it ourselves — that's
+  // an expected tab switch, not a failure worth logging or showing.
+  function isAbortError(err) {
+    return !!err && (err.name === "AbortError" || err.code === 20);
+  }
+
   function loadSection(field) {
+    const render = beginSectionRender();
     setActiveTile(field);
 
     const content = document.getElementById("content");
     content.style.opacity = 0;
 
-    setTimeout(async () => {
+    sectionTimer = setTimeout(async () => {
+      sectionTimer = null;
+      // A newer tab was tapped between scheduling and firing.
+      if (render.isStale()) return;
       try {
 
       if (field === "trip_information_content") {
@@ -3474,7 +3528,7 @@
         content.style.opacity = 1;
         styleLinksAsButtons();
         applyReadMoreClamping(content);
-        await loadTeacherList(content);
+        await loadTeacherList(content, render);
         return;
       }
 
@@ -3606,7 +3660,7 @@
           </div>` + (portalData[field] || "");
         content.style.opacity = 1;
         styleLinksAsButtons();
-        await loadStudentList(content, { expandable: true });
+        await loadStudentList(content, { expandable: true, render });
         // Fire the folder fetch in parallel with the student list — slots
         // the file grid into the placeholder above when it returns.
         loadInstructorFiles().catch(err => {
@@ -3675,13 +3729,15 @@
         content.innerHTML = `<div style="color:#999; font-size:13px; text-align:center; padding:30px; letter-spacing:1px;">LOADING FAQs...</div>`;
         content.style.opacity = 1;
         try {
-          const res = await fetch(`/.netlify/functions/get-insurance`);
+          const res = await fetch(`/.netlify/functions/get-insurance`, { signal: render.signal });
           const data = await res.json();
+          if (render.isStale()) return;
           const globalFaqs = (data.global_faqs || "").trim();
           const tripFaqs = (portalData.faqs || "").trim();
           const html = globalFaqs || tripFaqs || "No FAQs available";
           content.innerHTML = html;
         } catch (err) {
+          if (isAbortError(err) || render.isStale()) return;
           console.error("FAQ fetch error:", err);
           content.innerHTML = portalData.faqs || "No FAQs available";
         }
@@ -3695,6 +3751,9 @@
       styleLinksAsButtons();
 
       } catch (err) {
+        // A tab switch that aborted this render's fetches isn't an error,
+        // and a stale render must never paint over the tab now on screen.
+        if (isAbortError(err) || render.isStale()) return;
         // Any throw from the async section-rendering above lands here so
         // it's visible in the console AND on the page, instead of leaving
         // the user staring at "Loading..." forever.
@@ -3710,11 +3769,16 @@
     }, 100);
   }
 
-  async function loadTeacherList(content) {
+  // `render` is the guard token from loadSection(). It's optional so any
+  // other caller keeps working, but without it a late response can append a
+  // second SCHOOL CONTACTS grid to whatever tab is on screen.
+  async function loadTeacherList(content, render) {
+    const isStale = () => !!(render && render.isStale());
     try {
       const portalId = portalData.hs_object_id;
-      const res = await fetch(`/.netlify/functions/get-teachers?portalId=${portalId}`);
+      const res = await fetch(`/.netlify/functions/get-teachers?portalId=${portalId}`, { signal: render && render.signal });
       const data = await res.json();
+      if (isStale()) return;
 
       const teachers    = Array.isArray(data.teachers)    ? data.teachers    : [];
       const tripLeaders = Array.isArray(data.tripLeaders) ? data.tripLeaders : [];
@@ -3798,6 +3862,10 @@
       });
 
       section.appendChild(grid);
+      if (isStale() || !content.isConnected) return;
+      // Belt and braces: if a contacts grid somehow survived a previous
+      // render of this tab, replace it rather than stacking a second one.
+      content.querySelectorAll(".teacher-section").forEach(prev => prev.remove());
       content.appendChild(section);
 
       // After the grid is in the DOM, decide which bios actually overflow
@@ -3806,6 +3874,7 @@
       wireLeaderCardReadMore(section);
 
     } catch (err) {
+      if (isAbortError(err) || isStale()) return;
       console.error("Teacher load error:", err);
     }
   }
@@ -3961,6 +4030,15 @@
   async function loadStudentList(content, options = {}) {
     const expandable = !!options.expandable;
     const showAppModal = !!options.applicationModal;
+    // Guard token from loadSection() (see beginSectionRender). Optional, but
+    // without it a slow student fetch from a tab the instructor has already
+    // left appends a second student grid to the tab now on screen.
+    const render = options.render;
+    const isStale = () => !!(render && render.isStale());
+
+    // Clear anything a previous render of this tab may have left behind so
+    // we can never end up with two loaders or two grids.
+    content.querySelectorAll("#studentLoader, .student-grid").forEach(prev => prev.remove());
 
     const loader = document.createElement("div");
     loader.id = "studentLoader";
@@ -3975,11 +4053,13 @@
       // medical info — never expose unauthenticated).
       const callerEmail = sessionStorage.getItem("portalEmail") || "";
       const res = await fetch(
-        `/.netlify/functions/get-students?portalId=${encodeURIComponent(portalId)}&email=${encodeURIComponent(callerEmail)}`
+        `/.netlify/functions/get-students?portalId=${encodeURIComponent(portalId)}&email=${encodeURIComponent(callerEmail)}`,
+        { signal: render && render.signal }
       );
       const data = await res.json();
 
-      document.getElementById("studentLoader")?.remove();
+      loader.remove();
+      if (isStale() || !content.isConnected) return;
 
       if (data.error || !data.students?.length) {
         content.insertAdjacentHTML("beforeend", "<p style='color:#999; font-size:13px; margin-top:20px;'>No students found.</p>");
@@ -4102,10 +4182,14 @@
         `;
       });
 
+      if (isStale() || !content.isConnected) return;
+      content.querySelectorAll(".student-grid").forEach(prev => prev.remove());
       content.appendChild(grid);
 
     } catch (err) {
-      document.getElementById("studentLoader")?.remove();
+      loader.remove();
+      if (isAbortError(err) || isStale() || !content.isConnected) return;
+      console.error("Student load error:", err);
       content.insertAdjacentHTML("beforeend", "<p style='color:#c0392b; font-size:13px; margin-top:20px;'>Error loading students.</p>");
     }
   }
@@ -5009,17 +5093,22 @@
     const grid = document.querySelector(".grid");
     if (!grid) return;
 
+    // Idempotent: init() retries on failure, so each tile below is only
+    // injected if it isn't already on the page — never a second copy.
+
     // Both instructor tiles require a non-empty admin_role. Students and
     // parents (no admin_role) never see either.
     if (!viewerAdminRole) return;
 
     // INSTRUCTOR PI FOLDER — global, evergreen. Shown to every admin
     // (independent of program association or end-date).
-    grid.insertAdjacentHTML("beforeend", `
-      <div id="teacherTile" class="tile" onclick="loadSection('teacher_information_content')">
-        INSTRUCTOR PI FOLDER
-      </div>
-    `);
+    if (!document.getElementById("teacherTile")) {
+      grid.insertAdjacentHTML("beforeend", `
+        <div id="teacherTile" class="tile" onclick="loadSection('teacher_information_content')">
+          INSTRUCTOR PI FOLDER
+        </div>
+      `);
+    }
 
     // INSTRUCTOR RESOURCES — program-specific. Three required conditions
     // (in addition to the admin_role check above):
@@ -5033,7 +5122,7 @@
       portalData?.program_end_date,
       7 // days past end date that the Instructor Resources tile stays visible
     );
-    if (isAdminView || (isInstructorAssociated && endDateOk)) {
+    if ((isAdminView || (isInstructorAssociated && endDateOk)) && !document.getElementById("tripLeaderTile")) {
       grid.insertAdjacentHTML("beforeend", `
         <div id="tripLeaderTile" class="tile" onclick="loadSection('trip_leader_information_content')">
           INSTRUCTOR RESOURCES
