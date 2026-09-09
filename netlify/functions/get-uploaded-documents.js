@@ -1,13 +1,32 @@
-// Pulls a parent/student's previously-uploaded files directly from the
-// Jotform form(s) they submitted them through.
+// Pulls a student's previously-uploaded files — theirs AND their parents'/
+// guardians' — directly from the Jotform form(s) they came through.
 //
 // Why we go to Jotform directly rather than reading them off the contact in
 // HubSpot: Jotform is the source of truth for the actual file URLs and the
 // per-question labels (e.g. "Passport", "Medical form", "Consent letter"),
 // and a HubSpot mirror would lose that context.
 //
+// Whose uploads are pooled: a Jotform submission carries only the email the
+// submitter typed, so matching one address meant an instructor opening
+// UPLOADED DOCUMENTS for a student saw only the files that student sent
+// themselves — every passport a parent had uploaded was invisible, and staff
+// chased documents that were already in. The audience is now the student's
+// household (_shared/household.js: contacts on their deals, plus contacts
+// linked to them with a household association label), and each document says
+// who submitted it and which form it arrived on.
+//
+// Only emails that could belong to the SUBMITTER are matched — an
+// emergency-contact field is skipped — so a submission naming another
+// family's parent as next of kin can't file this student's passport under
+// that family. See submitterEmails in _shared/household.js.
+//
+// If the HubSpot lookup fails we fall back to the anchor email alone, which
+// is exactly the old behaviour: a thinner list, not an error page.
+//
 // Inputs (querystring):
-//   email     — the logged-in portal user's email (required)
+//   email     — whose documents to read. Defaults to the caller. Passing
+//               someone else's requires an admin_role on the token (see the
+//               authorisation check below).
 //   formIds   — comma-separated Jotform form IDs (preferred)
 //   formId    — single Jotform form ID (legacy, still supported)
 //
@@ -57,6 +76,12 @@ function isGenericUploadLabel(label) {
 
 import { authenticate, authError } from "./_shared/auth.js";
 import { proxyRef } from "./_shared/docref.js";
+import {
+  fetchHousehold,
+  buildAudience,
+  submitterEmails,
+  hubspotHeaders
+} from "./_shared/household.js";
 
 export async function handler(event) {
   try {
@@ -99,8 +124,12 @@ export async function handler(event) {
     const apiKey = process.env.JOTFORM_API_KEY;
     const baseUrl = (process.env.JOTFORM_BASE_URL || "https://api.jotform.com").replace(/\/+$/, "");
 
+    // Resolve the household first — it decides which submissions we keep.
+    const household = await fetchHousehold(cleanEmail, hubspotHeaders());
+    const audience = buildAudience(cleanEmail, household.contacts, identity.email);
+
     // Process all forms in parallel — title fetch + submissions fetch each.
-    const perForm = await Promise.all(idList.map(id => loadFormData(id, cleanEmail, apiKey, baseUrl)));
+    const perForm = await Promise.all(idList.map(id => loadFormData(id, audience, apiKey, baseUrl)));
 
     // Aggregate
     const documents = [];
@@ -118,7 +147,23 @@ export async function handler(event) {
       return tb - ta;
     });
 
-    const response = { documents, forms };
+    const response = {
+      documents,
+      forms,
+      // Who the list covers, so the UI can say "includes uploads by …" and
+      // distinguish "no parents linked" from "couldn't reach HubSpot".
+      household: {
+        people: [...audience.values()].map(a => ({
+          name: a.name,
+          role: a.role,
+          isAnchor: a.isAnchor,
+          isSelf: a.isSelf
+        })),
+        // True when a HubSpot step failed: the list may be missing a
+        // parent's uploads, so the UI shouldn't claim it is complete.
+        degraded: household.degraded
+      }
+    };
     if (firstError) response.warning = firstError;
 
     return {
@@ -132,7 +177,7 @@ export async function handler(event) {
   }
 }
 
-async function loadFormData(formId, cleanEmail, apiKey, baseUrl) {
+async function loadFormData(formId, audience, apiKey, baseUrl) {
   const out = { id: formId, title: null, documents: [], error: null };
 
   // Fetch form metadata (for the title) and submissions in parallel.
@@ -156,88 +201,122 @@ async function loadFormData(formId, cleanEmail, apiKey, baseUrl) {
   const isOptInForm = DOC_NAME_PATTERN_FORMS.has(String(formId));
 
   for (const submission of submissions.list) {
-    const answers = submission?.answers || {};
+    const docs = documentsFromSubmission(submission, audience, {
+      isOptInForm,
+      formId,
+      formTitle: out.title
+    });
+    for (const d of docs) out.documents.push(d);
+  }
 
-    // Sort answers by `order` so we can detect a "Document Name" textbox
-    // that immediately precedes a file-upload field.
-    const ordered = Object.entries(answers)
-      .map(([qid, a]) => ({ qid, ...(a || {}) }))
-      .sort((x, y) => {
-        const ox = parseInt(x.order, 10);
-        const oy = parseInt(y.order, 10);
-        if (Number.isFinite(ox) && Number.isFinite(oy)) return ox - oy;
-        return parseInt(x.qid, 10) - parseInt(y.qid, 10);
-      });
+  return out;
+}
 
-    let submissionEmail = null;
-    let lastTextValue = null; // last non-empty textbox/textarea answer seen
-    const fileUploads = [];
+// One Jotform submission → the documents it contributes to the list. Returns
+// [] when the submission belongs to nobody in the household, or carries no
+// files. Pure (no I/O) so test/uploaded-documents.test.mjs can exercise the
+// matching and attribution rules directly.
+export function documentsFromSubmission(submission, audience, opts = {}) {
+  const { isOptInForm = false, formId = null, formTitle = null } = opts;
+  const out = [];
+  const answers = submission?.answers || {};
 
-    for (const a of ordered) {
-      const t = String(a.type || "").toLowerCase();
-      const label = a.text || a.name || "";
+  // Sort answers by `order` so we can detect a "Document Name" textbox
+  // that immediately precedes a file-upload field.
+  const ordered = Object.entries(answers)
+    .map(([qid, a]) => ({ qid, ...(a || {}) }))
+    .sort((x, y) => {
+      const ox = parseInt(x.order, 10);
+      const oy = parseInt(y.order, 10);
+      if (Number.isFinite(ox) && Number.isFinite(oy)) return ox - oy;
+      return parseInt(x.qid, 10) - parseInt(y.qid, 10);
+    });
 
-      if (t === "control_email" && a.answer) {
-        submissionEmail = String(a.answer).toLowerCase().trim();
-      } else if (t === "control_textbox" || t === "control_textarea") {
-        const v = a.answer;
-        if (v && String(v).trim()) lastTextValue = String(v).trim();
-      } else if (t === "control_fileupload" && a.answer) {
-        // Decide what label to attach to this upload's documents.
-        //
-        // Order of preference:
-        //   1. If a "Document Name" textbox came right before, use that.
-        //   2. Else if the upload field has a SPECIFIC label (e.g. "Passport"),
-        //      use that.
-        //   3. Else (generic label like "Additional file upload" with nothing
-        //      typed in the textbox), return null so the frontend can hide
-        //      the heading entirely instead of showing a meaningless one.
-        const generic = isGenericUploadLabel(label);
-        let effectiveLabel;
-        if (lastTextValue && (isOptInForm || generic)) {
-          effectiveLabel = lastTextValue;
-        } else if (generic) {
-          effectiveLabel = null;
-        } else {
-          effectiveLabel = label;
-        }
+  let lastTextValue = null; // last non-empty textbox/textarea answer seen
+  const fileUploads = [];
 
-        const v = a.answer;
-        const urls = Array.isArray(v) ? v.filter(Boolean) : [String(v)].filter(Boolean);
-        for (const u of urls) {
-          fileUploads.push({ url: u, fieldLabel: effectiveLabel });
-        }
-        // Don't carry the same textbox value over to the next file upload.
-        lastTextValue = null;
+  for (const a of ordered) {
+    const t = String(a.type || "").toLowerCase();
+    const label = a.text || a.name || "";
+
+    if (t === "control_textbox" || t === "control_textarea") {
+      const v = a.answer;
+      if (v && String(v).trim()) lastTextValue = String(v).trim();
+    } else if (t === "control_fileupload" && a.answer) {
+      // Decide what label to attach to this upload's documents.
+      //
+      // Order of preference:
+      //   1. If a "Document Name" textbox came right before, use that.
+      //   2. Else if the upload field has a SPECIFIC label (e.g. "Passport"),
+      //      use that.
+      //   3. Else (generic label like "Additional file upload" with nothing
+      //      typed in the textbox), return null so the frontend can hide
+      //      the heading entirely instead of showing a meaningless one.
+      const generic = isGenericUploadLabel(label);
+      let effectiveLabel;
+      if (lastTextValue && (isOptInForm || generic)) {
+        effectiveLabel = lastTextValue;
+      } else if (generic) {
+        effectiveLabel = null;
+      } else {
+        effectiveLabel = label;
       }
+
+      const v = a.answer;
+      const urls = Array.isArray(v) ? v.filter(Boolean) : [String(v)].filter(Boolean);
+      for (const u of urls) {
+        fileUploads.push({ url: u, fieldLabel: effectiveLabel });
+      }
+      // Don't carry the same textbox value over to the next file upload.
+      lastTextValue = null;
     }
+  }
 
-    if (!submissionEmail || submissionEmail !== cleanEmail) continue;
-    if (fileUploads.length === 0) continue;
+  // Keep the submission when one of its submitter-candidate emails belongs to
+  // the household. The first such address is the person we credit: forms lead
+  // with whoever is filling them in, and emergency-contact fields have already
+  // been filtered out by submitterEmails.
+  const matchedEmail = submitterEmails(submission).find(e => audience.has(e));
+  if (!matchedEmail) return out;
+  if (fileUploads.length === 0) return out;
 
-    for (const f of fileUploads) {
-      let filename = "Document";
-      try {
-        const u = new URL(f.url);
-        filename = decodeURIComponent(u.pathname.split("/").pop() || "Document");
-      } catch (_) { /* leave default */ }
+  const uploader = audience.get(matchedEmail);
 
-      out.documents.push({
-        // NOTE: deliberately NOT exposing submission.id / formId here — a
-        // Jotform submission ID is enough to edit the raw submission via
-        // jotform.com/edit/<id>, which would bypass the secure editor.
-        uploadedAt: submission.created_at || null,
-        fieldLabel: f.fieldLabel,
-        filename,
-        // Route the file through our /document-proxy EDGE function so the
-        // parent doesn't need a Jotform login to view it. We use the edge
-        // function (not /.netlify/functions/get-document) because uploaded
-        // documents — passport scans, medical PDFs, photos — can be larger
-        // than the 6MB synchronous-function cap. The edge function streams
-        // the upstream body straight through with no base64 overhead.
-        url: proxyRef(f.url)
-      });
-    }
+  for (const f of fileUploads) {
+    let filename = "Document";
+    try {
+      const u = new URL(f.url);
+      filename = decodeURIComponent(u.pathname.split("/").pop() || "Document");
+    } catch (_) { /* leave default */ }
+
+    out.push({
+      // NOTE: deliberately NOT exposing submission.id here — a Jotform
+      // submission ID is enough to edit the raw submission via
+      // jotform.com/edit/<id>, which would bypass the secure editor. The
+      // FORM id below is fine: it is already public in the embed URL.
+      uploadedAt: submission.created_at || null,
+      fieldLabel: f.fieldLabel,
+      filename,
+      // Which form it arrived on, so the modal can group by form. The id is
+      // the form's, not the submission's — a form id is already public in the
+      // embed URL, unlike a submission id.
+      formId: formId ? String(formId) : null,
+      formTitle: formTitle || null,
+      // Who submitted it. `uploadedByName` is null when HubSpot had no name
+      // for them (or the lookup failed and we're running on one email alone),
+      // and the UI then omits the byline. No email address is returned.
+      uploadedByName: uploader.name,
+      uploadedByRole: uploader.role,
+      uploadedByStudent: uploader.isAnchor,
+      uploadedByMe: uploader.isSelf,
+      // Route the file through our /document-proxy EDGE function so the
+      // parent doesn't need a Jotform login to view it. We use the edge
+      // function (not /.netlify/functions/get-document) because uploaded
+      // documents — passport scans, medical PDFs, photos — can be larger
+      // than the 6MB synchronous-function cap. The edge function streams
+      // the upstream body straight through with no base64 overhead.
+      url: proxyRef(f.url)
+    });
   }
 
   return out;

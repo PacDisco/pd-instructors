@@ -4526,19 +4526,66 @@
     }
   }
 
+  // Who uploaded a document, as one short phrase. The list pools the whole
+  // household, so an instructor needs to see at a glance whether the passport
+  // came from the student or a parent — that decides who they chase.
+  function documentUploader(doc) {
+    const name = (doc.uploadedByName || "").trim();
+    const role = (doc.uploadedByRole || "").trim();
+    if (doc.uploadedByMe) return "you";
+    if (name && role && !doc.uploadedByStudent) return `${name} (${role})`;
+    if (name) return name;
+    if (doc.uploadedByStudent) return "the student";
+    return "";                                   // no name from HubSpot — say nothing
+  }
+
   function renderStudentDocuments(data) {
     if (!data || data.error) {
       return `<div class="application-detail-empty">Could not load documents${data?.error ? `: ${attrEsc(data.error)}` : ""}.</div>`;
     }
     const documents = Array.isArray(data.documents) ? data.documents : [];
+    const people = Array.isArray(data.household?.people) ? data.household.people : [];
+    const degraded = Boolean(data.household?.degraded);
+
     let metaHtml = "";
     if (data.warning) {
-      metaHtml = `<div class="app-modal-meta" style="color:#b45309;">Note: ${attrEsc(data.warning)}</div>`;
+      metaHtml += `<div class="app-modal-meta" style="color:#b45309;">Note: ${attrEsc(data.warning)}</div>`;
     }
+    // Say whose uploads this list covers. Without it an instructor can't tell
+    // an empty list ("nobody has uploaded") from a narrow one ("we only
+    // looked at the student's own address").
+    const others = people.filter(p => p && !p.isAnchor && p.name);
+    if (degraded) {
+      metaHtml += `<div class="app-modal-meta" style="color:#b45309;">Parent records were unavailable — this list may be missing uploads made by a parent.</div>`;
+    } else if (others.length) {
+      const names = others.map(p => (p.role ? `${p.name} (${p.role})` : p.name));
+      const list = names.length === 1
+        ? names[0]
+        : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+      metaHtml += `<div class="app-modal-meta">Student uploads, plus ${attrEsc(list)}</div>`;
+    } else {
+      metaHtml += `<div class="app-modal-meta">Student uploads &mdash; no parent contacts are linked in HubSpot</div>`;
+    }
+
     if (documents.length === 0) {
-      return metaHtml + `<div class="application-detail-empty">No documents uploaded by this student yet.</div>`;
+      return metaHtml + `<div class="application-detail-empty">Nothing uploaded yet by this student or their parents.</div>`;
     }
-    const rows = documents.map(doc => {
+
+    // Group by the form each document arrived on, keeping the order the
+    // backend sent (newest first), so a form with recent activity leads.
+    const groups = [];
+    const byKey = new Map();
+    documents.forEach(doc => {
+      const key = doc.formId || doc.formTitle || "";
+      if (!byKey.has(key)) {
+        const g = { title: (doc.formTitle || "").trim(), docs: [] };
+        byKey.set(key, g);
+        groups.push(g);
+      }
+      byKey.get(key).docs.push(doc);
+    });
+
+    const rowsFor = (docs) => docs.map(doc => {
       const label = (doc.fieldLabel || "").trim() || doc.filename || "Document";
       let when = "";
       if (doc.uploadedAt) {
@@ -4547,7 +4594,12 @@
           when = d.toLocaleDateString("en-NZ", { year: "numeric", month: "short", day: "numeric" });
         }
       }
-      const sub = [doc.filename, when ? `Uploaded ${when}` : ""].filter(Boolean).join(" · ");
+      const by = documentUploader(doc);
+      const uploaded = by && when ? `Uploaded by ${by} · ${when}`
+                     : by         ? `Uploaded by ${by}`
+                     : when       ? `Uploaded ${when}`
+                     : "";
+      const sub = [doc.filename, uploaded].filter(Boolean).join(" · ");
       return `
         <div class="application-field">
           <div class="application-field-label">${attrEsc(label)}</div>
@@ -4557,7 +4609,18 @@
           </div>
         </div>`;
     }).join("");
-    return metaHtml + rows;
+
+    // One heading per form, but only when there's more than one form in play —
+    // a single-form list doesn't need a header repeating the modal title.
+    const showHeadings = groups.length > 1;
+    const body = groups.map(g => {
+      const heading = showHeadings && g.title
+        ? `<div class="application-detail-meta" style="margin-top:14px;">${attrEsc(g.title.toUpperCase())}</div>`
+        : "";
+      return heading + rowsFor(g.docs);
+    }).join("");
+
+    return metaHtml + body;
   }
 
   // ===========================================================================

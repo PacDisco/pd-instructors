@@ -12,6 +12,6 @@
     "web-push": "^3.6.7"
   },
   "scripts": {
-    "test": "node test/instructor-checklist.test.mjs"
+    "test": "node test/instructor-checklist.test.mjs && node test/uploaded-documents.test.mjs"
   }
 }
