@@ -106,7 +106,11 @@ async function attemptUpstream(target) {
     host === "hubspot.com" ||
     /\.hubapi\.com$/i.test(host)
   );
-  if (!isJotform && !isHubSpotCdn) {
+  // Applicant photos uploaded through pd-apply (apply.pacificdiscovery.org).
+  const applyBase = Netlify.env.get("APPLY_SERVICE_URL") || "";
+  let isApply = false;
+  try { isApply = !!applyBase && host === new URL(applyBase).hostname.toLowerCase() && parsed.pathname.startsWith("/api/file/"); } catch (_) { isApply = false; }
+  if (!isJotform && !isHubSpotCdn && !isApply) {
     return { ok: false, status: 400, body: { error: "Only Jotform or HubSpot URLs are allowed", host } };
   }
 
@@ -128,7 +132,11 @@ async function attemptUpstream(target) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), UPSTREAM_TIMEOUT_MS);
   try {
-    upstream = await fetch(parsed.toString(), { redirect: "follow", signal: ctrl.signal });
+    upstream = await fetch(parsed.toString(), {
+      redirect: "follow",
+      signal: ctrl.signal,
+      headers: isApply ? { "x-apply-key": Netlify.env.get("APPLY_SERVICE_KEY") || "" } : undefined
+    });
   } catch (err) {
     const timedOut = err && (err.name === "AbortError");
     console.error(
