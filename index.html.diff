@@ -1,0 +1,263 @@
+--- a/b/public/index.html	2026-10-08 17:24:29.707038000 +1300
++++ b/public/index.html	2026-10-08 17:24:29.723692858 +1300
+@@ -1415,6 +1415,48 @@
+       text-transform: uppercase; margin-top: 2px;
+     }
+ 
++    /* WEEKLY CHECK-IN (reached from the Instructor Resources QUICKLINKS) */
++    .ci-back {
++      display: inline-block; margin-bottom: 18px; font-size: 11px; font-weight: 600;
++      letter-spacing: 1.2px; color: #3B5998; cursor: pointer; background: none; border: 0; padding: 0;
++    }
++    .ci-back:hover { text-decoration: underline; }
++    .ci-list { display: flex; flex-direction: column; gap: 10px; }
++    .ci-row {
++      display: flex; align-items: center; justify-content: space-between; gap: 16px;
++      padding: 12px 16px; background: #f8f8f8; border: 1px solid #e5e7eb; border-left: 4px solid #2e9e5b;
++    }
++    .ci-row-when { font-weight: 600; color: #1a1a1a; font-size: 14px; }
++    .ci-row-meta { font-size: 11px; color: #999; letter-spacing: 0.5px; text-transform: uppercase; margin-top: 2px; }
++    .ci-label { display: block; font-size: 11px; font-weight: 600; letter-spacing: 1.2px; color: #777; margin: 18px 0 8px; }
++    .ci-days { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; -webkit-overflow-scrolling: touch; }
++    .ci-day, .ci-time {
++      background: #fff; border: 1px solid #d6d9e0; border-radius: 6px; cursor: pointer;
++      font: inherit; color: #2c3140; transition: background 0.15s ease, border-color 0.15s ease;
++    }
++    .ci-day { flex: 0 0 auto; padding: 8px 14px; font-size: 12px; text-align: center; line-height: 1.35; }
++    .ci-day b { display: block; font-size: 11px; letter-spacing: 1px; }
++    .ci-times { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 8px; }
++    .ci-time { padding: 10px 0; font-size: 13px; font-weight: 600; }
++    .ci-day:hover, .ci-time:hover { border-color: #3B5998; background: #eef1f6; }
++    .ci-day.active, .ci-time.active { background: #3B5998; border-color: #3B5998; color: #fff; }
++    .ci-input {
++      width: 100%; max-width: 520px; padding: 10px 12px; font: inherit; font-size: 14px;
++      border: 1px solid #d6d9e0; border-radius: 6px; background: #fff; color: #1a1a1a;
++    }
++    textarea.ci-input { min-height: 72px; resize: vertical; }
++    .ci-hint { font-size: 12px; color: #999; margin-top: 8px; }
++    .ci-submit {
++      margin-top: 22px; padding: 11px 22px; background: #3B5998; color: #fff; border: none;
++      border-radius: 4px; font-size: 11px; font-weight: 600; letter-spacing: 1.5px; cursor: pointer;
++    }
++    .ci-submit:disabled { opacity: 0.45; cursor: not-allowed; }
++    .ci-error { margin-top: 14px; padding: 10px 14px; background: #fdecea; color: #8a1c12; font-size: 13px; border-radius: 4px; }
++    .ci-done { padding: 18px 20px; background: #eef8f1; border: 1px solid #cfe8d7; border-left: 4px solid #2e9e5b; }
++    .ci-done-title { font-weight: 700; color: #1a1a1a; font-size: 15px; margin-bottom: 6px; }
++    .ci-done p { margin: 4px 0; font-size: 14px; color: #333; }
++    .ci-done a { color: #3B5998; font-weight: 600; }
++
+     /* KEY CONTACTS list (Instructor Resources tab) */
+     .kc-head {
+       display: flex; align-items: center; justify-content: space-between;
+@@ -2603,6 +2645,179 @@
+     return `https://form.jotform.com/${PROGRAM_REPORTS_FORM_ID}${q ? "?" + q : ""}`;
+   }
+ 
++  // ---------------------------------------------------------------------------
++  // WEEKLY CHECK-IN
++  // ---------------------------------------------------------------------------
++  // Times are shown in the instructor's own time zone (they're often abroad);
++  // the office's hours live in the PD Dashboard → Instructor Check-ins.
++  const CI_FN = "/.netlify/functions/checkins";
++  const ciState = { byDay: {}, day: null, slot: null, maxRepeat: 1, duration: 20 };
++
++  function renderWeeklyCheckin() {
++    const name = sessionStorage.getItem("firstName") || "";
++    return `
++      <button type="button" class="ci-back" onclick="loadSection('trip_leader_information_content')">← INSTRUCTOR RESOURCES</button>
++      <div class="docs-section">
++        <div class="docs-section-label sec-accent" style="--accent:#2e9e5b;">YOUR UPCOMING CHECK-INS</div>
++        <div id="ciMine"><span style="font-size:13px; color:#999;">Loading your check-ins...</span></div>
++      </div>
++      <div class="docs-section" id="ciBookSection">
++        <div class="docs-section-label sec-accent" style="--accent:#3B5998;">BOOK A CHECK-IN</div>
++        <div id="ciForm">
++          <span class="ci-label">DAY</span>
++          <div class="ci-days" id="ciDays"><span style="font-size:13px; color:#999;">Loading times...</span></div>
++          <span class="ci-label">TIME</span>
++          <div class="ci-times" id="ciTimes"></div>
++          <div class="ci-hint" id="ciTz"></div>
++          <label class="ci-label" for="ciRepeat">HOW OFTEN</label>
++          <select class="ci-input" id="ciRepeat"><option value="1">Just this once</option></select>
++          <label class="ci-label" for="ciName">YOUR NAME</label>
++          <input class="ci-input" id="ciName" autocomplete="name" value="${attrEsc(name)}">
++          <label class="ci-label" for="ciNotes">ANYTHING TO FLAG? (OPTIONAL)</label>
++          <textarea class="ci-input" id="ciNotes" maxlength="1000"></textarea>
++          <div class="ci-hint">The invite goes to ${attrEsc(sessionStorage.getItem("portalEmail") || "your portal email")} with a Google Meet link.</div>
++          <button type="button" class="ci-submit" id="ciSubmit" onclick="submitWeeklyCheckin()" disabled>BOOK CHECK-IN</button>
++          <div id="ciError"></div>
++        </div>
++      </div>`;
++  }
++
++  async function loadWeeklyCheckin() {
++    loadMyCheckins();
++    const days = document.getElementById("ciDays");
++    let data;
++    try {
++      const res = await fetch(`${CI_FN}?action=slots`);
++      data = await res.json().catch(() => ({}));
++      if (!res.ok) throw new Error(data.error || "Couldn't load times.");
++    } catch (err) {
++      if (days && days.isConnected) days.innerHTML = `<div class="manuals-empty">${attrEsc(err.message || "Couldn't load times.")}</div>`;
++      return;
++    }
++    if (!days || !days.isConnected) return;
++
++    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
++    ciState.byDay = {}; ciState.day = null; ciState.slot = null;
++    ciState.maxRepeat = data.maxRepeat || 1; ciState.duration = data.duration || 20;
++    (data.slots || []).forEach(iso => {
++      const k = new Date(iso).toLocaleDateString("en-CA", { timeZone: tz });
++      (ciState.byDay[k] = ciState.byDay[k] || []).push(iso);
++    });
++    const counts = [4, 6, 8, 10, 12].filter(n => n <= ciState.maxRepeat);
++    if (ciState.maxRepeat > 1 && counts.indexOf(ciState.maxRepeat) < 0) counts.push(ciState.maxRepeat);
++    document.getElementById("ciRepeat").innerHTML = `<option value="1">Just this once</option>` +
++      counts.map(n => `<option value="${n}">Same time every week for ${n} weeks</option>`).join("");
++    document.getElementById("ciTz").textContent = `Times shown in your time zone (${tz}). ${ciState.duration}-minute call.`;
++    ciState.day = Object.keys(ciState.byDay)[0] || null;
++    if (!ciState.day) {
++      days.innerHTML = `<div class="manuals-empty">No times are available right now. Please contact the office.</div>`;
++      document.getElementById("ciTimes").innerHTML = "";
++      return;
++    }
++    renderCheckinDays(); renderCheckinTimes();
++    document.getElementById("ciName").addEventListener("input", updateCheckinSubmit);
++  }
++
++  function renderCheckinDays() {
++    const el = document.getElementById("ciDays");
++    if (!el) return;
++    el.innerHTML = Object.keys(ciState.byDay).map(k => {
++      const d = new Date(ciState.byDay[k][0]);
++      return `<button type="button" class="ci-day${k === ciState.day ? " active" : ""}" data-day="${attrEsc(k)}">
++        <b>${attrEsc(d.toLocaleDateString("en-NZ", { weekday: "short" }).toUpperCase())}</b>${attrEsc(d.toLocaleDateString("en-NZ", { day: "numeric", month: "short" }))}</button>`;
++    }).join("");
++    el.querySelectorAll(".ci-day").forEach(b => b.onclick = () => {
++      ciState.day = b.dataset.day; ciState.slot = null;
++      renderCheckinDays(); renderCheckinTimes(); updateCheckinSubmit();
++    });
++  }
++
++  function renderCheckinTimes() {
++    const el = document.getElementById("ciTimes");
++    if (!el) return;
++    el.innerHTML = (ciState.byDay[ciState.day] || []).map(iso =>
++      `<button type="button" class="ci-time${iso === ciState.slot ? " active" : ""}" data-slot="${attrEsc(iso)}">${attrEsc(new Date(iso).toLocaleTimeString("en-NZ", { hour: "numeric", minute: "2-digit" }))}</button>`
++    ).join("");
++    el.querySelectorAll(".ci-time").forEach(b => b.onclick = () => {
++      ciState.slot = b.dataset.slot; renderCheckinTimes(); updateCheckinSubmit();
++    });
++  }
++
++  function updateCheckinSubmit() {
++    const btn = document.getElementById("ciSubmit");
++    const name = document.getElementById("ciName");
++    if (btn) btn.disabled = !(ciState.slot && name && name.value.trim());
++  }
++
++  async function submitWeeklyCheckin() {
++    const btn = document.getElementById("ciSubmit");
++    const err = document.getElementById("ciError");
++    err.innerHTML = ""; btn.disabled = true; btn.textContent = "BOOKING...";
++    try {
++      const res = await fetch(CI_FN, {
++        method: "POST",
++        headers: { "Content-Type": "application/json" },
++        body: JSON.stringify({
++          action: "book",
++          start: ciState.slot,
++          name: document.getElementById("ciName").value.trim(),
++          notes: document.getElementById("ciNotes").value,
++          repeatWeeks: document.getElementById("ciRepeat").value
++        })
++      });
++      const data = await res.json().catch(() => ({}));
++      if (!res.ok) {
++        err.innerHTML = `<div class="ci-error">${attrEsc(data.error || "Booking failed. Please try again.")}</div>`;
++        if (res.status === 409) loadWeeklyCheckin();
++        return;
++      }
++      const when = new Date(data.start).toLocaleString("en-NZ", { weekday: "long", day: "numeric", month: "long", hour: "numeric", minute: "2-digit" });
++      document.getElementById("ciForm").innerHTML = `
++        <div class="ci-done">
++          <div class="ci-done-title">You're booked ✓</div>
++          <p>${attrEsc(when)}${data.weeks > 1 ? `, then weekly for ${data.weeks} weeks` : ""}.</p>
++          <p>A calendar invite is on its way to ${attrEsc(sessionStorage.getItem("portalEmail") || "your email")}.</p>
++          ${data.meetLink ? `<p><a href="${attrEsc(data.meetLink)}" target="_blank" rel="noopener">Google Meet link</a></p>` : ""}
++        </div>`;
++      loadMyCheckins();
++    } catch (e) {
++      err.innerHTML = `<div class="ci-error">Booking failed. Please check your connection and try again.</div>`;
++    } finally {
++      if (btn.isConnected) { btn.textContent = "BOOK CHECK-IN"; updateCheckinSubmit(); }
++    }
++  }
++
++  async function loadMyCheckins() {
++    const el = document.getElementById("ciMine");
++    if (!el) return;
++    let data;
++    try {
++      const res = await fetch(`${CI_FN}?action=mine`);
++      data = await res.json().catch(() => ({}));
++      if (!res.ok) throw new Error(data.error);
++    } catch (e) {
++      if (el.isConnected) el.innerHTML = `<div class="manuals-empty">Couldn't load your check-ins right now.</div>`;
++      return;
++    }
++    if (!el.isConnected) return;
++    const rows = Array.isArray(data.checkins) ? data.checkins : [];
++    if (!rows.length) {
++      el.innerHTML = `<div class="manuals-empty">You have no check-ins booked yet.</div>`;
++      return;
++    }
++    el.innerHTML = `<div class="ci-list">` + rows.map(c => {
++      const d = new Date(c.start);
++      return `<div class="ci-row">
++        <div>
++          <div class="ci-row-when">${attrEsc(d.toLocaleString("en-NZ", { weekday: "long", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }))}</div>
++          <div class="ci-row-meta">${c.recurring ? "Weekly check-in" : "Check-in"}</div>
++        </div>
++        ${c.meet ? `<a class="tl-link-btn" style="padding:7px 14px;background:#3B5998;color:#fff;font-size:10px;font-weight:600;letter-spacing:1.5px;text-decoration:none;border-radius:4px;" href="${attrEsc(c.meet)}" target="_blank" rel="noopener">JOIN</a>` : ""}
++      </div>`;
++    }).join("") + `</div>
++      <div class="ci-hint">Need to change or cancel? Use the calendar invite, or contact the office.</div>`;
++  }
++
+   function renderProgramReports(portalId, email, programName) {
+     const src = programReportsFormUrl(portalId, email, programName);
+     return `
+@@ -3651,6 +3866,11 @@
+                 <div class="tl-link-meta">Submit &amp; view trip reports</div>
+                 <button type="button" class="tl-link-btn" onclick="loadSection('program_reports')">OPEN REPORTS</button>
+               </div>
++              <div class="tl-link-card">
++                <div class="tl-link-title">WEEKLY CHECK-IN</div>
++                <div class="tl-link-meta">Book a call with the office team</div>
++                <button type="button" class="tl-link-btn" onclick="loadSection('weekly_checkin')">BOOK A CHECK-IN</button>
++              </div>
+             </div>
+           </div>
+           ` + instrResourceSection + `
+@@ -3668,6 +3888,19 @@
+         });
+         return;
+       }
++
++      if (field === "weekly_checkin") {
++        // Weekly check-in booking — reached from the QUICKLINKS card on the
++        // Instructor Resources tab. Slots + booking go through
++        // /.netlify/functions/checkins, which proxies to the PD Dashboard
++        // (Google Calendar). The booking email is the signed-in portal email.
++        content.innerHTML = renderWeeklyCheckin();
++        content.style.opacity = 1;
++        loadWeeklyCheckin().catch(err => {
++          console.error("Weekly check-in load error:", err);
++        });
++        return;
++      }
+ 
+       if (field === "program_reports") {
+         // Program Reports — reached from the QUICKLINKS card on the
