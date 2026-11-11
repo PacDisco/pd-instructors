@@ -42,6 +42,7 @@ const WEEK_NAMES         = ["weekofprogram", "week"];
 const WEEK_LABELS        = ["week of program", "week"];
 
 import { authenticate, authError } from "./_shared/auth.js";
+import { canAccessProgram, canAccessPerson, isRestrictedAdmin, isFullAdmin, forbidden } from "./_shared/program-access.js";
 
 export async function handler(event) {
   try {
@@ -75,6 +76,11 @@ export async function handler(event) {
     const access = await checkInstructorOrAdminAccess(email, hsHeaders);
     if (!access.allowed) {
       console.warn(`[get-program-reports] Denied for ${email} on portal ${portalId}: ${access.reason}`);
+      return jsonResponse(403, { error: "Not authorized to view program reports." });
+    }
+    // Instructors: only their own programs.
+    if (!(await canAccessProgram(identity, portalId))) {
+      console.warn(`[get-program-reports] Denied for ${email} on portal ${portalId}: not on this program`);
       return jsonResponse(403, { error: "Not authorized to view program reports." });
     }
 

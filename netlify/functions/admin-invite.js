@@ -22,6 +22,7 @@
 import crypto from "crypto";
 import nodemailer from "nodemailer";
 import { authenticateAdmin, authError } from "./_shared/auth.js";
+import { isFullAdmin } from "./_shared/program-access.js";
 
 // Roles the FORM is allowed to ASSIGN to a new admin. The form's dropdown
 // is hardcoded to these three — these are the roles that show up as
@@ -72,6 +73,11 @@ export async function handler(event) {
     let inviterIdentity;
     try { inviterIdentity = await authenticateAdmin(event); } catch (e) { return authError(e); }
     const inviterEmail = inviterIdentity.email;
+    // Instructors are limited to their own programs, so they can't hand out
+    // admin access (which would see every program).
+    if (!isFullAdmin(inviterIdentity.role)) {
+      return jsonResponse(403, { error: "Only staff admins can invite admins." });
+    }
 
     let body;
     try { body = JSON.parse(event.body || "{}"); }

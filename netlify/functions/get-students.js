@@ -11,6 +11,7 @@
 // sums them.
 
 import { authenticate, authError } from "./_shared/auth.js";
+import { canAccessProgram, canAccessPerson, isRestrictedAdmin, isFullAdmin, forbidden } from "./_shared/program-access.js";
 import { proxyRef } from "./_shared/docref.js";
 import { mergeApplySubmissions } from "./_shared/apply-source.js";
 
@@ -50,6 +51,11 @@ export async function handler(event) {
         statusCode: 403,
         body: JSON.stringify({ error: "Not authorized to view this list." })
       };
+    }
+    // Instructors: only their own programs.
+    if (!(await canAccessProgram(identity, portalId))) {
+      console.warn(`[get-students] Denied for ${email} on portal ${portalId}: not on this program`);
+      return forbidden("Not authorized to view this list.");
     }
 
     // 1. Get all contacts associated to this portal

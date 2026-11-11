@@ -1,4 +1,5 @@
 import { authenticate, authError } from "./_shared/auth.js";
+import { canAccessProgram, canAccessPerson, isRestrictedAdmin, isFullAdmin, forbidden } from "./_shared/program-access.js";
 
 export async function handler(event) {
   try {
@@ -22,6 +23,11 @@ export async function handler(event) {
         statusCode: 403,
         body: JSON.stringify({ error: "Not authorized to view this trip." })
       };
+    }
+    // Instructors use the admin view too, but only for their own programs.
+    if (adminPortalId && !(await canAccessProgram(identity, adminPortalId))) {
+      console.warn(`[portal] Denied ${identity.email} (${identity.role}) on program ${adminPortalId}: not on this program`);
+      return forbidden("You're not assigned to this program.");
     }
 
     const OBJECT = "2-58411705";

@@ -100,6 +100,7 @@ const COLUMNS = [
 ];
 
 import { authenticate, authError } from "./_shared/auth.js";
+import { canAccessProgram, canAccessPerson, isRestrictedAdmin, isFullAdmin, forbidden } from "./_shared/program-access.js";
 import { proxyRef } from "./_shared/docref.js";
 import { mergeApplySubmissions, isApplyForm } from "./_shared/apply-source.js";
 
@@ -139,6 +140,11 @@ export async function handler(event) {
     if (!access.allowed) {
       console.warn(`[get-fast-facts] Denied for ${email} on portal ${portalId}: ${access.reason}`);
       return { statusCode: 403, body: JSON.stringify({ error: "Not authorized to view this list." }) };
+    }
+    // Instructors: only their own programs.
+    if (!(await canAccessProgram(identity, portalId))) {
+      console.warn(`[get-fast-facts] Denied for ${email} on portal ${portalId}: not on this program`);
+      return forbidden("Not authorized to view this list.");
     }
 
     // ----- 1. Resolve the trip's Student contacts -----

@@ -21,6 +21,7 @@ const PORTAL_OBJECT_ID = "2-58411705";
 const GLOBAL_PORTAL_ID = "54796059552";
 
 import { authenticateAdmin, authError } from "./_shared/auth.js";
+import { isRestrictedAdmin } from "./_shared/program-access.js";
 
 const DAY = 24 * 60 * 60 * 1000;
 const isoDay = (v) => {
@@ -206,6 +207,10 @@ export async function handler(event) {
       return (a.title || "").localeCompare(b.title || "");
     });
 
+    // Instructors only ever see the programs they're assigned to.
+    if (isRestrictedAdmin(identity.role)) {
+      return jsonResponse(200, { portals: portals.filter((p) => p.associated), restricted: true });
+    }
     return jsonResponse(200, { portals });
 
   } catch (err) {

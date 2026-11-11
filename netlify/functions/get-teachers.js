@@ -10,13 +10,15 @@
 // see who's accompanying the trip and a short bio of each trip leader.
 
 import { authenticate, authError } from "./_shared/auth.js";
+import { canAccessProgram, canAccessPerson, isRestrictedAdmin, isFullAdmin, forbidden } from "./_shared/program-access.js";
 import { proxyRef } from "./_shared/docref.js";
 
 export async function handler(event) {
   try {
     // Previously this endpoint took no identity at all. Require a valid
     // session so only logged-in portal users can read a program's leaders.
-    try { await authenticate(event); } catch (e) { return authError(e); }
+    let identity;
+    try { identity = await authenticate(event); } catch (e) { return authError(e); }
 
     const { portalId } = event.queryStringParameters || {};
 
@@ -26,6 +28,8 @@ export async function handler(event) {
         body: JSON.stringify({ error: "Missing portalId" })
       };
     }
+    // Only people on this program (or staff admins) may see its contacts.
+    if (!(await canAccessProgram(identity, portalId))) return forbidden();
 
     const OBJECT = "2-58411705";
     const headers = {

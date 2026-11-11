@@ -75,6 +75,7 @@ function isGenericUploadLabel(label) {
 }
 
 import { authenticate, authError } from "./_shared/auth.js";
+import { canAccessProgram, canAccessPerson, isRestrictedAdmin, isFullAdmin, forbidden } from "./_shared/program-access.js";
 import { proxyRef } from "./_shared/docref.js";
 import { mergeApplySubmissions, isApplyForm } from "./_shared/apply-source.js";
 import {
@@ -96,7 +97,8 @@ export async function handler(event) {
     let identity;
     try { identity = await authenticate(event); } catch (e) { return authError(e); }
     const requested = String((event.queryStringParameters || {}).email || "").toLowerCase().trim();
-    if (requested && requested !== identity.email && !identity.role) {
+    // Someone else's uploads: staff admins, or an Instructor whose program they're on.
+    if (requested && requested !== identity.email && !(await canAccessPerson(identity, requested))) {
       return { statusCode: 403, body: JSON.stringify({ error: "Not authorized to view these documents." }) };
     }
     const email = requested || identity.email;

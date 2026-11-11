@@ -12,6 +12,6 @@
     "web-push": "^3.6.7"
   },
   "scripts": {
-    "test": "node test/portal-phase.test.mjs && node test/instructor-checklist.test.mjs && node test/uploaded-documents.test.mjs"
+    "test": "node test/portal-phase.test.mjs && node test/program-access.test.mjs && node test/uploaded-documents.test.mjs && node test/apply-source.test.mjs"
   }
 }

@@ -189,7 +189,7 @@
 <header>
   <h1>PACIFIC DISCOVERY · ADMIN</h1>
   <div class="actions">
-    <a class="btn" href="/admin-invite.html">INVITE ADMIN</a>
+    <a class="btn" href="/admin-invite.html" id="inviteBtn">INVITE ADMIN</a>
     <button type="button" onclick="logout()">LOG OUT</button>
   </div>
   <div class="who" id="whoami"></div>
@@ -256,6 +256,10 @@
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;");
   }
+
+  // Instructors only see their own programs (enforced on the server) and
+  // can't invite admins.
+  if (adminRole === "Instructor") document.getElementById("inviteBtn")?.remove();
 
   // ── sort, filter, and the Completed folder ─────────────────────────────
   // Each trip comes with its phase (in-progress / upcoming / no-dates /
@@ -334,7 +338,9 @@
     const container = document.getElementById("picker");
     container.className = "";
     if (!portals.length) {
-      container.innerHTML = `<div class="empty">No portals exist yet. Create a Portal record in HubSpot to get started.</div>`;
+      container.innerHTML = adminRole === "Instructor"
+        ? `<div class="empty">You're not assigned to any programs yet. Ask the Pacific Discovery team to add you to your program in HubSpot.</div>`
+        : `<div class="empty">No portals exist yet. Create a Portal record in HubSpot to get started.</div>`;
       return;
     }
     const years = [...new Set(portals.map((p) => p.year).filter(Boolean))].sort();
@@ -343,7 +349,7 @@
     if (state.country && !countries.includes(state.country)) state.country = "";
     const terms = ["Spring", "Summer", "Fall", "Winter"].filter((t) => portals.some((p) => p.term === t));
     if (state.term && !terms.includes(state.term)) state.term = "";
-    const anyMine = portals.some((p) => p.associated);
+    const anyMine = portals.some((p) => p.associated) && portals.some((p) => !p.associated);
     container.innerHTML = `
       <div class="controls" role="search">
         <input type="search" id="fQ" placeholder="Search program or destination" aria-label="Search trips">
