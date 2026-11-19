@@ -132,6 +132,14 @@ export async function handler(event) {
       all.push(...r.list);
     }
 
+    // Caller's name, only needed to match older private reports that have no
+    // instructorEmail. Best-effort and separate from the access check: if this
+    // lookup fails, those older reports just stay hidden — access is unaffected.
+    let callerName = {};
+    if (!isFullAdmin(access.role) && !isFullAdmin(identity.role) && access.contactId) {
+      callerName = await fetchContactName(access.contactId, hsHeaders);
+    }
+
     const wantId = String(portalId).trim();
     const submissions = all
       .filter(sub => String(answerByName(sub, PROGRAM_ID_NAMES, PROGRAM_ID_LABELS) || "").trim() === wantId)
@@ -155,11 +163,7 @@ export async function handler(event) {
       .filter(row => {
         if (!isPrivateType(row.formType)) return true;
         if (isFullAdmin(access.role) || isFullAdmin(identity.role)) return true;
-        return isOwnReport(row, {
-          email,
-          firstname: access.firstname,
-          lastname: access.lastname
-        });
+        return isOwnReport(row, { email, ...callerName });
       })
       // Newest first.
       .sort((a, b) => new Date(b.submittedAt || 0) - new Date(a.submittedAt || 0));
@@ -240,6 +244,24 @@ async function fetchAllSubmissions(formId, apiKey, baseUrl) {
   return { list };
 }
 
+async function fetchContactName(contactId, headers) {
+  try {
+    const res = await fetch(
+      `https://api.hubapi.com/crm/v3/objects/contacts/${encodeURIComponent(contactId)}?properties=firstname,lastname`,
+      { headers }
+    );
+    if (!res.ok) {
+      console.warn(`[get-program-reports] name lookup HTTP ${res.status} (older private reports hidden)`);
+      return {};
+    }
+    const p = (await res.json())?.properties || {};
+    return { firstname: p.firstname || "", lastname: p.lastname || "" };
+  } catch (err) {
+    console.warn("[get-program-reports] name lookup threw:", err?.message || err);
+    return {};
+  }
+}
+
 // Allowed if the caller has any non-empty admin_role. Fails closed on errors.
 async function checkInstructorOrAdminAccess(email, headers) {
   const cleanEmail = String(email).toLowerCase().trim();
@@ -253,11 +275,14 @@ async function checkInstructorOrAdminAccess(email, headers) {
         headers,
         body: JSON.stringify({
           filterGroups: [{ filters: [{ propertyName: "email", operator: "EQ", value: cleanEmail }] }],
-          properties: ["admin_role", "firstname", "lastname"]
+          properties: ["admin_role"]
         })
       }
     );
-    if (!res.ok) return { allowed: false, reason: `Contact lookup HTTP ${res.status}` };
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      return { allowed: false, reason: `Contact lookup HTTP ${res.status} ${body.slice(0, 200)}` };
+    }
     const data = await res.json();
     contact = data.results?.[0];
   } catch (err) {
@@ -270,8 +295,7 @@ async function checkInstructorOrAdminAccess(email, headers) {
       allowed: true,
       reason: "admin_role",
       role: String(p.admin_role).trim(),
-      firstname: p.firstname || "",
-      lastname: p.lastname || ""
+      contactId: contact.id
     };
   }
   return { allowed: false, reason: "No admin_role" };
