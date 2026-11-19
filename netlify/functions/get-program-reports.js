@@ -22,6 +22,18 @@
 // Access: same gate as get-instructor-files.js — any contact with a non-empty
 // admin_role. Reports may contain sensitive operational detail, so non-admins
 // are denied.
+//
+// PRIVATE form types (Self Evaluation, Co-Instructor feedback):
+//   Every other report on a program is visible to all its instructors. These
+//   two are personal, so an Instructor only sees the ones THEY submitted. Full
+//   staff admins still see everything. Ownership is decided by:
+//     1. the hidden `instructorEmail` field (prefilled by the portal) matching
+//        the caller's email — exact and reliable; else
+//     2. "Who's filling out the report" matching the caller's HubSpot first +
+//        last name (for older submissions made before instructorEmail existed).
+//   If neither matches, the report is hidden (fails closed).
+//   Which form types count as private: env PRIVATE_REPORT_TYPE_PATTERNS
+//   (comma-separated, case-insensitive regexes), default below.
 
 const DEFAULT_FORM_IDS = (process.env.PROGRAM_REPORTS_FORM_ID
   || "250887973978080")
@@ -40,6 +52,27 @@ const WHO_NAMES          = ["whosfillingoutthereport", "whoisfillingoutthereport
 const WHO_LABELS         = ["whos filling out the report", "who is filling out the report", "who s filling out the report", "name"];
 const WEEK_NAMES         = ["weekofprogram", "week"];
 const WEEK_LABELS        = ["week of program", "week"];
+
+// Matched against the "What Type Of Form Are You Submitting?" answer.
+const PRIVATE_TYPE_PATTERNS = (process.env.PRIVATE_REPORT_TYPE_PATTERNS
+  || "self[\\s-]*(eval|assess|reflect),co[\\s-]*instructor")
+  .split(",").map(s => s.trim()).filter(Boolean).map(p => new RegExp(p, "i"));
+
+export function isPrivateType(formType) {
+  const t = String(formType || "");
+  return !!t && PRIVATE_TYPE_PATTERNS.some(re => re.test(t));
+}
+
+const normName = s => String(s || "").toLowerCase().replace(/[^a-z]+/g, " ").trim();
+
+/** Did the caller submit this report? row = mapped submission. */
+export function isOwnReport(row, caller) {
+  const subEmail = String(row.instructorEmail || "").toLowerCase().trim();
+  if (subEmail) return subEmail === String(caller.email || "").toLowerCase().trim();
+  const who = normName(row.submitter);
+  const me = normName(`${caller.firstname || ""} ${caller.lastname || ""}`);
+  return !!who && !!me && who === me;
+}
 
 import { authenticate, authError } from "./_shared/auth.js";
 import { canAccessProgram, canAccessPerson, isRestrictedAdmin, isFullAdmin, forbidden } from "./_shared/program-access.js";
@@ -116,6 +149,17 @@ export async function handler(event) {
           // mode; the list itself is gated to instructors/admins above.
           editUrl: id ? `https://www.jotform.com/edit/${encodeURIComponent(id)}` : ""
         };
+      })
+      // Self evaluations / co-instructor feedback: own submissions only,
+      // unless the caller is a full staff admin.
+      .filter(row => {
+        if (!isPrivateType(row.formType)) return true;
+        if (isFullAdmin(access.role) || isFullAdmin(identity.role)) return true;
+        return isOwnReport(row, {
+          email,
+          firstname: access.firstname,
+          lastname: access.lastname
+        });
       })
       // Newest first.
       .sort((a, b) => new Date(b.submittedAt || 0) - new Date(a.submittedAt || 0));
@@ -209,7 +253,7 @@ async function checkInstructorOrAdminAccess(email, headers) {
         headers,
         body: JSON.stringify({
           filterGroups: [{ filters: [{ propertyName: "email", operator: "EQ", value: cleanEmail }] }],
-          properties: ["admin_role"]
+          properties: ["admin_role", "firstname", "lastname"]
         })
       }
     );
@@ -220,8 +264,15 @@ async function checkInstructorOrAdminAccess(email, headers) {
     return { allowed: false, reason: `Contact lookup threw: ${err.message}` };
   }
   if (!contact) return { allowed: false, reason: "Contact not found" };
-  if (String(contact.properties?.admin_role || "").trim()) {
-    return { allowed: true, reason: "admin_role" };
+  const p = contact.properties || {};
+  if (String(p.admin_role || "").trim()) {
+    return {
+      allowed: true,
+      reason: "admin_role",
+      role: String(p.admin_role).trim(),
+      firstname: p.firstname || "",
+      lastname: p.lastname || ""
+    };
   }
   return { allowed: false, reason: "No admin_role" };
 }
